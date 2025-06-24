@@ -17,6 +17,7 @@ package io.aklivity.zilla.runtime.binding.amqp.internal;
 
 import java.net.URL;
 
+import io.aklivity.zilla.runtime.binding.amqp.internal.config.AmqpBindingConfig;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.binding.Binding;
 import io.aklivity.zilla.runtime.engine.config.KindConfig;

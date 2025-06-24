@@ -8,11 +8,17 @@
   "imports":
   [
     "io.aklivity.zilla:runtime:develop-SNAPSHOT",
-    "io.aklivity.zilla:incubator:develop-SNAPSHOT"
+    "io.aklivity.zilla:incubator:develop-SNAPSHOT",
+    "io.aklivity.zilla:binding-claimcheck:develop-SNAPSHOT"
   ],
-
+  "modules": {
+    "kotlin.stdlib": {
+      "systemOnly": true
+    }
+  },
   "dependencies":
   [
+    "io.aklivity.zilla:binding-claimcheck:develop-SNAPSHOT",
     "io.aklivity.zilla:binding-amqp",
     "io.aklivity.zilla:binding-asyncapi",
     "io.aklivity.zilla:binding-echo",

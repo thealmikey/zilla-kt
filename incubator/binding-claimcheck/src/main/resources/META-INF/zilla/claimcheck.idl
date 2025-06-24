@@ -1,26 +1,11 @@
-scope michael
+scope claimcheck
 {
-    scope stream
-    {
-        struct ClaimCheckBeginEx extends core::stream::Extension
-        {
-            string16 bucket;
-            string16 object;
-            string8 contentType;
-        }
-
-        struct ClaimCheckEndEx extends core::stream::Extension
-        {
-            int64 size;
-            string8 checksum;
-        }
-    }
-
     scope event
     {
         enum ClaimCheckEventType (uint8)
         {
-            CLAIM_CREATED (1)
+            CLAIM_CREATED (1),
+            CLAIM_FAILED  (2)
         }
 
         struct ClaimCreatedEx extends core::stream::Extension
@@ -30,9 +15,15 @@ scope michael
             int64 size;
         }
 
+        struct ClaimFailedEx extends core::stream::Extension
+        {
+            string8 reason;
+        }
+
         union ClaimCheckEventEx switch (ClaimCheckEventType)
         {
             case CLAIM_CREATED: ClaimCreatedEx created;
+            case CLAIM_FAILED:  ClaimFailedEx failed;
         }
     }
 }
