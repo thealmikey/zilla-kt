@@ -11,11 +11,6 @@
     "io.aklivity.zilla:incubator:develop-SNAPSHOT",
     "io.aklivity.zilla:binding-claimcheck:develop-SNAPSHOT"
   ],
-  "modules": {
-    "kotlin.stdlib": {
-      "systemOnly": true
-    }
-  },
   "dependencies":
   [
     "io.aklivity.zilla:binding-claimcheck:develop-SNAPSHOT",

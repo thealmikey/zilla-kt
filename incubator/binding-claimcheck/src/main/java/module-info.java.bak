@@ -6,6 +6,7 @@
 module io.aklivity.zilla.runtime.binding.claimcheck
 {
     requires io.aklivity.zilla.runtime.engine;
+    requires kotlin.stdlib;
 
     exports io.aklivity.zilla.runtime.binding.claimcheck.internal;
     exports io.aklivity.zilla.runtime.binding.claimcheck.internal.config;

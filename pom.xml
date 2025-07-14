@@ -64,6 +64,7 @@
     <k3po.version>3.3.0</k3po.version>
     <jmh.version>1.37</jmh.version>
     <kotlin.version>2.1.21</kotlin.version>
+    <jpms.module.version>1.0.0</jpms.module.version>
   </properties>
 
   <modules>
@@ -242,7 +243,7 @@
       </dependency>
       <dependency>
         <groupId>org.jetbrains.kotlin</groupId>
-        <artifactId>kotlin-stdlib</artifactId>
+        <artifactId>kotlin-stdlib-jdk8</artifactId>
         <version>${kotlin.version}</version>
       </dependency>
     </dependencies>
@@ -386,6 +387,9 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.13.0</version>
+          <configuration>
+<!--            <moduleVersion>${jpms.module.version}</moduleVersion>-->
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

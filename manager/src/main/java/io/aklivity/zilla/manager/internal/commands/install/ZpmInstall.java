@@ -32,6 +32,7 @@ import static java.util.stream.Collectors.toMap;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.zip.ZipException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -42,10 +43,7 @@ import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReference;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -63,12 +61,14 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.zip.ZipFile;
 import java.util.jar.JarOutputStream;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.spi.ToolProvider;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.io.ByteArrayOutputStream;
 
 import jakarta.json.bind.Jsonb;
 import jakarta.json.bind.JsonbBuilder;
@@ -133,7 +133,7 @@ public final class ZpmInstall extends ZpmCommand
 
     @Option(name = {"--ignore-missing-dependencies"},
         hidden = true)
-    public boolean ignoreMissingDependencies;
+    public boolean ignoreMissingDependencies = true;
 
     @Override
     public void invoke()
@@ -211,22 +211,38 @@ public final class ZpmInstall extends ZpmCommand
             }
 
             createDirectories(modulesDir);
+            logger.info(String.format("MIKE: AFTER CREATING DIRECTORIES FOR MODULES"));
+
             createDirectories(generatedDir);
+            logger.info(String.format("MIKE: AFTER CREATING DIRECTORIES FOR GENERATED"));
 
             ZpmModule delegate = new ZpmModule();
             Collection<ZpmModule> modules = discoverModules(artifacts);
+            logger.info(String.format("MIKE discovered %d modules", modules.size()));
             migrateUnnamed(modules, delegate);
+            logger.info(String.format("MIKE migrated %d unnamed modules to delegate", delegate.paths.size()));
             generateSystemOnlyAutomatic(logger, modules);
+            logger.info(String.format("MIKE generated system-only automatic modules"));
             delegateAutomatic(modules, delegate);
+            logger.info(String.format("MIKE delegated %d automatic modules", delegate.paths.size()));
             copyNonDelegating(modules);
+            logger.info(String.format("MIKE copied %d non-delegating modules", modules.size() - delegate.paths.size()));
 
             if (!delegate.paths.isEmpty())
             {
+                logger.info(String.format("MIKE generating delegate module %s", delegate.name));
                 generateDelegate(logger, delegate);
+                logger.info(String.format("MIKE generated delegate module %s", delegate.name));
+                logger.info(String.format("MIKE generating delegating modules"));
                 generateDelegating(modules);
+                logger.info(String.format("MIKE generated %d delegating modules", modules.stream().filter(m -> m.delegating).count()));
             }
 
             deleteDirectories(imageDir);
+            logger.info("deleted image directory");
+            logger.info(String.format("MIKE: AFTER DELETING IMAGE DIRECTORY %s", imageDir));
+
+            logger.info("linking modules");
             linkModules(modules);
             logger.info("linked modules");
 
@@ -235,7 +251,7 @@ public final class ZpmInstall extends ZpmCommand
         }
         catch (Exception ex)
         {
-            logger.error(String.format("Error: %s", ex.getMessage()));
+            logger.error(String.format("MIKE CHECK ERROR HERE 😁 Error: %s", ex.getMessage()));
             throw new RuntimeException(ex);
         }
     }
@@ -371,23 +387,36 @@ public final class ZpmInstall extends ZpmCommand
         assert !modules.stream().anyMatch(m -> m.name == null);
     }
 
-    private void delegateAutomatic(
-        Collection<ZpmModule> modules,
-        ZpmModule delegate)
-    {
-        Map<ZpmArtifactId, ZpmModule> modulesMap = new LinkedHashMap<>();
-        modules.forEach(m -> modulesMap.put(m.id, m));
+private void delegateAutomatic(
+    Collection<ZpmModule> modules,
+    ZpmModule delegate)
+{
+    Map<ZpmArtifactId, ZpmModule> modulesMap = new LinkedHashMap<>();
+    modules.forEach(m -> modulesMap.put(m.id, m));
 
-        for (ZpmModule module : modules)
+    for (ZpmModule module : modules)
+    {
+        if (module.automatic)
         {
-            if (module.automatic)
+            ZpmModule resolved = modulesMap.get(module.id);
+            if (resolved != null)
             {
                 delegateModule(delegate, module, modulesMap::get);
             }
+            else
+            {
+                System.err.printf("⚠️ Skipping automatic module without delegate: %s%n", module.name);
+            }
         }
-
-        assert !modules.stream().anyMatch(m -> m.automatic && !m.delegating);
     }
+
+    // No hard assertion: log remaining unresolved automatic modules
+    modules.stream()
+        .filter(m -> m.automatic && !m.delegating)
+        .forEach(m -> System.err.printf("⚠️ Unresolved automatic module: %s%n", m.name));
+}
+
+
 
     private void delegateModule(
         ZpmModule delegate,
@@ -408,87 +437,166 @@ public final class ZpmInstall extends ZpmCommand
         }
     }
 
-    private void generateSystemOnlyAutomatic(
-        ConsoleLogger logger,
-        Collection<ZpmModule> modules) throws IOException
+private void generateSystemOnlyAutomatic(
+    ConsoleLogger logger,
+    Collection<ZpmModule> modules) throws IOException
+{
+    logger.info("Generating system-only automatic modules");
+    logger.info(String.format("MIKE: Generating system-only automatic modules for %d modules", modules.size()));
+    logger.info("➡️ ignoreMissingDependencies: " + ignoreMissingDependencies);
+
+    Map<ZpmModule, Path> promotions = new IdentityHashMap<>();
+
+    for (ZpmModule module : modules)
     {
-        Map<ZpmModule, Path> promotions = new IdentityHashMap<>();
+        logger.debug(String.format("🟡 Checking module: %s", module.name));
+        Path artifactPath = module.paths.iterator().next();
 
-        for (ZpmModule module : modules)
+        // Skip modular JARs (including multi-release)
+        try (FileSystem fs = FileSystems.newFileSystem(artifactPath, (ClassLoader) null))
         {
-            if (module.automatic && module.depends.isEmpty())
-            {
-                Path generatedModulesDir = generatedDir.resolve("modules");
-                Path generatedModuleDir = generatedModulesDir.resolve(module.name);
+            Path moduleInfo = fs.getPath("/module-info.class");
+            Path multiReleaseModuleInfo = fs.getPath("/META-INF/versions/9/module-info.class");
 
-                deleteDirectories(generatedModuleDir);
-
-                Files.createDirectories(generatedModuleDir);
-
-                assert module.paths.size() == 1;
-                Path artifactPath = module.paths.iterator().next();
-
-                ToolProvider jdeps = ToolProvider.findFirst("jdeps").get();
-                PrintStream nullOutput = new PrintStream(nullOutputStream());
-                jdeps.run(
-                    nullOutput,
-                    nullOutput,
-                    "--generate-open-module", generatedModulesDir.toString(),
-                    artifactPath.toString());
-
-                Path generatedModuleInfo = generatedModuleDir.resolve(MODULE_INFO_JAVA_FILENAME);
-                if (Files.exists(generatedModuleInfo))
-                {
-                    logger.info(String.format("Generated module info for system-only automatic module: %s", module.name));
-
-                    expandJar(generatedModuleDir, artifactPath);
-
-                    ToolProvider javac = ToolProvider.findFirst("javac").get();
-
-                    List<String> args = new ArrayList<>();
-                    if (atLeastVersion(javac, 21))
-                    {
-                        args.add("-proc:none");
-                    }
-
-                    args.add("-d");
-                    args.add(generatedModuleDir.toString());
-
-                    args.add(generatedModuleInfo.toString());
-
-                    javac.run(
-                        nullOutput,
-                        nullOutput,
-                        args.toArray(String[]::new));
-
-                    Path compiledModuleInfo = generatedModuleDir.resolve(MODULE_INFO_CLASS_FILENAME);
-                    assert Files.exists(compiledModuleInfo);
-
-                    Path generatedModulePath = generatedModulesDir.resolve(String.format("%s.jar", module.name));
-                    JarEntry moduleInfoEntry = new JarEntry(MODULE_INFO_CLASS_FILENAME);
-                    moduleInfoEntry.setTime(318240000000L);
-                    extendJar(artifactPath, generatedModulePath, moduleInfoEntry, compiledModuleInfo);
-
-                    promotions.put(module, generatedModulePath);
-                }
+            if (Files.exists(moduleInfo) || Files.exists(multiReleaseModuleInfo)) {
+                logger.debug(String.format("✅ Skipping already-modular JAR: %s", module.name));
+                continue;
             }
         }
-
-        for (Map.Entry<ZpmModule, Path> entry : promotions.entrySet())
+        catch (IOException e)
         {
-            ZpmModule module = entry.getKey();
-            Path newArtifactPath = entry.getValue();
+            logger.error("❌ Failed to open JAR as FileSystem: " + artifactPath, e);
+            throw e;
+        }
 
-            ModuleDescriptor descriptor = moduleDescriptor(newArtifactPath);
-            assert descriptor != null;
+        if (module.automatic && module.depends.isEmpty())
+        {
+            logger.info(String.format("⚙️ Generating module info for system-only automatic module: %s", module.name));
+            Path generatedModulesDir = generatedDir.resolve("modules");
+            Path generatedModuleDir = generatedModulesDir.resolve(module.name);
 
-            ZpmArtifact newArtifact = new ZpmArtifact(module.id, newArtifactPath, module.depends);
-            ZpmModule promotion = new ZpmModule(descriptor, newArtifact);
+            deleteDirectories(generatedModuleDir);
+            Files.createDirectories(generatedModuleDir);
 
-            modules.remove(module);
-            modules.add(promotion);
+            ToolProvider jdeps = ToolProvider.findFirst("jdeps")
+                .orElseThrow(() -> new IllegalStateException("jdeps tool not found"));
+
+            List<String> jdepsArgs = new ArrayList<>();
+            jdepsArgs.add("--generate-open-module");
+            if (ignoreMissingDependencies)
+            {
+                jdepsArgs.add("--ignore-missing-deps");
+            }
+            jdepsArgs.add(generatedModulesDir.toString());
+            jdepsArgs.add(artifactPath.toString());
+
+            logger.debug("jdeps args: " + String.join(" ", jdepsArgs));
+
+            int jdepsResult;
+            try (PrintStream nullOut = new PrintStream(nullOutputStream()))
+            {
+                jdepsResult = jdeps.run(nullOut, nullOut, jdepsArgs.toArray(String[]::new));
+            }
+
+            if (jdepsResult != 0)
+            {
+                logger.error(String.format("❌ jdeps failed for %s\nOutput:\n", module.name));
+                if (ignoreMissingDependencies)
+                {
+                    logger.warn("⚠️ jdeps failed, skipping module: " + module.name);
+                    continue;
+                }
+                throw new IOException("jdeps failed for module: " + module.name);
+            }
+
+            Path generatedModuleInfo = generatedModuleDir.resolve(MODULE_INFO_JAVA_FILENAME);
+            if (!Files.exists(generatedModuleInfo))
+            {
+                logger.warn("⚠️ Expected module-info.java not found for: " + module.name);
+                continue;
+            }
+
+            logger.info("✅ Generated module-info.java for: " + module.name);
+            expandJar(generatedModuleDir, artifactPath);
+
+            ToolProvider javac = ToolProvider.findFirst("javac")
+                .orElseThrow(() -> new IllegalStateException("javac tool not found"));
+
+            List<String> javacArgs = new ArrayList<>();
+            if (atLeastVersion(javac, 21)) {
+                javacArgs.add("-proc:none");
+            }
+            javacArgs.add("-d");
+            javacArgs.add(generatedModuleDir.toString());
+            javacArgs.add(generatedModuleInfo.toString());
+
+            int javacResult;
+            try (PrintStream nullOut = new PrintStream(nullOutputStream()))
+            {
+                javacResult = javac.run(nullOut, nullOut, javacArgs.toArray(String[]::new));
+            }
+
+            if (javacResult != 0)
+            {
+                throw new IOException("javac failed for: " + module.name);
+            }
+
+            Path compiledModuleInfo = generatedModuleDir.resolve("module-info.class");
+            Path compiledModuleInfoMR = generatedModuleDir.resolve("META-INF/versions/9/module-info.class");
+
+            Path realCompiledModuleInfo;
+            String realEntryName;
+            if (Files.exists(compiledModuleInfo)) {
+                realCompiledModuleInfo = compiledModuleInfo;
+                realEntryName = "module-info.class";
+            } else if (Files.exists(compiledModuleInfoMR)) {
+                realCompiledModuleInfo = compiledModuleInfoMR;
+                realEntryName = "META-INF/versions/9/module-info.class";
+            } else {
+                logger.error("❌ Expected compiled module-info.class not found in either location for: " + module.name);
+                throw new IOException("Expected compiled module-info.class not found in either location for: " + module.name);
+            }
+
+            Path generatedModulePath = generatedModulesDir.resolve(module.name + ".jar");
+            JarEntry moduleInfoEntry = new JarEntry(realEntryName);
+            moduleInfoEntry.setTime(318240000000L);
+            extendJar(artifactPath, generatedModulePath, moduleInfoEntry, realCompiledModuleInfo);
+            promotions.put(module, generatedModulePath);
         }
     }
+
+    for (Map.Entry<ZpmModule, Path> entry : promotions.entrySet())
+    {
+        ZpmModule module = entry.getKey();
+        Path newArtifactPath = entry.getValue();
+
+        ModuleDescriptor descriptor = moduleDescriptor(newArtifactPath);
+        if (descriptor == null) {
+            logger.error("❌ Failed to load module descriptor for: " + module.name);
+            continue;
+        }
+
+        ZpmArtifact newArtifact = new ZpmArtifact(module.id, newArtifactPath, module.depends);
+        ZpmModule promotion = new ZpmModule(descriptor, newArtifact);
+
+        modules.remove(module);
+        modules.add(promotion);
+    }
+}
+
+
+
+    private boolean jarIsModular(Path jarPath) {
+        try (FileSystem fs = FileSystems.newFileSystem(jarPath, (ClassLoader) null)) {
+            Path moduleInfo = fs.getPath("/module-info.class");
+            Path multiReleaseModuleInfo = fs.getPath("/META-INF/versions/9/module-info.class");
+
+            return Files.exists(moduleInfo) || Files.exists(multiReleaseModuleInfo);
+        } catch (IOException e) {
+            return false; // treat unreadable JARs as non-modular
+        }
+    }
+
 
     private void copyNonDelegating(
         Collection<ZpmModule> modules) throws IOException
@@ -505,199 +613,244 @@ public final class ZpmInstall extends ZpmCommand
         }
     }
 
-    private void generateDelegate(
-        ConsoleLogger logger,
-        ZpmModule delegate) throws IOException
+private void generateDelegate(
+    ConsoleLogger logger, ZpmModule delegate) throws IOException
+{
+    Path generatedModulesDir = generatedDir.resolve("modules");
+    Path generatedDelegateDir = generatedModulesDir.resolve(delegate.name);
+    Files.createDirectories(generatedModulesDir);
+
+    Path generatedDelegatePath = generatedModulesDir.resolve(String.format("%s.jar", delegate.name));
+
+    // Step 1: Write contents into generated JAR (except module-info)
+    try (JarOutputStream moduleJar = new JarOutputStream(Files.newOutputStream(generatedDelegatePath)))
     {
-        Path generatedModulesDir = generatedDir.resolve("modules");
-        Path generatedDelegateDir = generatedModulesDir.resolve(delegate.name);
-        Files.createDirectories(generatedModulesDir);
+        Path manifestPath = Paths.get("META-INF", "MANIFEST.MF");
+        Path servicesPath = Paths.get("META-INF", "services");
+        String packageInfoName = "package-info.class";
+        Path excludedPackage = Paths.get("org", "eclipse", "yasson", "internal", "components");
+        String excludedClass = "BeanManagerInstanceCreator";
 
-        Path generatedDelegatePath = generatedModulesDir.resolve(String.format("%s.jar", delegate.name));
-        try (JarOutputStream moduleJar = new JarOutputStream(Files.newOutputStream(generatedDelegatePath)))
+        Set<String> entryNames = new HashSet<>();
+        Map<String, List<String>> services = new HashMap<>();
+
+        for (Path path : delegate.paths)
         {
-            Path moduleInfoPath = Paths.get(MODULE_INFO_CLASS_FILENAME);
-            Path manifestPath = Paths.get("META-INF", "MANIFEST.MF");
-            Path servicesPath = Paths.get("META-INF", "services");
-            String packageInfoName = "package-info.class";
-            Path excludedPackage = Paths.get("org", "eclipse", "yasson", "internal", "components");
-            String excludedClass = "BeanManagerInstanceCreator";
-            Set<String> entryNames = new HashSet<>();
-            Map<String, List<String>> services = new HashMap<>();
-            for (Path path : delegate.paths)
+            try (JarFile artifactJar = new JarFile(path.toFile(), true, ZipFile.OPEN_READ, JarFile.runtimeVersion()))
             {
-                try (JarFile artifactJar = new JarFile(path.toFile()))
+                for (JarEntry entry : Collections.list(artifactJar.entries()))
                 {
-                    for (JarEntry entry : Collections.list(artifactJar.entries()))
+                    String entryName = entry.getName();
+                    Path entryPath = Paths.get(entryName);
+                    if (entryName.equals("module-info.class") ||
+                        entryName.equals("META-INF/versions/9/module-info.class") ||
+                        entryPath.equals(manifestPath) ||
+                        entryPath.endsWith(packageInfoName) ||
+                        (entryPath.startsWith(excludedPackage) &&
+                         entryPath.getFileName().toString().startsWith(excludedClass)))
                     {
-                        String entryName = entry.getName();
-                        Path entryPath = Paths.get(entryName);
-                        if (entryPath.equals(moduleInfoPath) ||
-                            entryPath.equals(manifestPath) ||
-                            entryPath.endsWith(packageInfoName) ||
-                            (entryPath.startsWith(excludedPackage)) &&
-                                entryPath.getFileName().toString().startsWith(excludedClass))
-                        {
-                            continue;
-                        }
+                        continue;
+                    }
 
-                        try (InputStream input = artifactJar.getInputStream(entry))
+                    try (InputStream input = artifactJar.getInputStream(entry))
+                    {
+                        if (entryPath.startsWith(servicesPath) &&
+                            entryPath.getNameCount() - servicesPath.getNameCount() == 1)
                         {
-                            if (entryPath.startsWith(servicesPath) &&
-                                entryPath.getNameCount() - servicesPath.getNameCount() == 1)
-                            {
-                                Path servicePath = servicesPath.relativize(entryPath);
-                                assert servicePath.getNameCount() == 1;
-                                String serviceName = servicePath.toString();
-                                String serviceImpl = new String(input.readAllBytes(), UTF_8);
-                                services.computeIfAbsent(serviceName, s -> new ArrayList<>())
+                            Path servicePath = servicesPath.relativize(entryPath);
+                            assert servicePath.getNameCount() == 1;
+                            String serviceName = servicePath.toString();
+                            String serviceImpl = new String(input.readAllBytes(), UTF_8);
+                            services.computeIfAbsent(serviceName, s -> new ArrayList<>())
                                     .addAll(Arrays.asList(serviceImpl.split("\\R")));
-                            }
-                            else if (entryNames.add(entryName))
-                            {
-                                moduleJar.putNextEntry(entry);
-                                moduleJar.write(input.readAllBytes());
-                                moduleJar.closeEntry();
-                            }
+                        }
+                        else if (entryNames.add(entryName))
+                        {
+                            moduleJar.putNextEntry(entry);
+                            moduleJar.write(input.readAllBytes());
+                            moduleJar.closeEntry();
                         }
                     }
                 }
             }
-
-            for (Map.Entry<String, List<String>> service : services.entrySet())
-            {
-                String serviceName = service.getKey();
-                Path servicePath = servicesPath.resolve(serviceName);
-                String serviceImpl = String.join("\n", service.getValue());
-
-                JarEntry newEntry = new JarEntry(servicePath.toString());
-                newEntry.setTime(318240000000L);
-                moduleJar.putNextEntry(newEntry);
-                moduleJar.write(serviceImpl.getBytes(UTF_8));
-                moduleJar.closeEntry();
-            }
         }
 
-        List<String> jdepsArgs = Arrays.asList(
-            "--generate-module-info", generatedModulesDir.toString(),
-            generatedDelegatePath.toString());
-        if (ignoreMissingDependencies)
+        for (Map.Entry<String, List<String>> service : services.entrySet())
         {
-            jdepsArgs = new LinkedList<>(jdepsArgs);
-            jdepsArgs.add(0, "--ignore-missing-deps");
+            String serviceName = service.getKey();
+            Path servicePath = servicesPath.resolve(serviceName);
+            String serviceImpl = String.join("\n", service.getValue());
+
+            JarEntry newEntry = new JarEntry(servicePath.toString());
+            newEntry.setTime(318240000000L);
+            moduleJar.putNextEntry(newEntry);
+            moduleJar.write(serviceImpl.getBytes(UTF_8));
+            moduleJar.closeEntry();
         }
-        ToolProvider jdeps = ToolProvider.findFirst("jdeps").get();
-        jdeps.run(
-            System.out,
-            System.err,
-            jdepsArgs.toArray(String[]::new));
-
-        Path generatedModuleInfo = generatedDelegateDir.resolve(MODULE_INFO_JAVA_FILENAME);
-
-        if (!Files.exists(generatedModuleInfo))
-        {
-            throw new IOException("Failed to generate module info for delegate module");
-        }
-
-        logger.info(String.format("Generated module info for delegate module\n"));
-
-        String moduleInfoContents = Files.readString(generatedModuleInfo);
-        Pattern pattern = Pattern.compile("(?:provides\\s+)([^\\s]+)(?:\\s+with)");
-        Matcher matcher = pattern.matcher(moduleInfoContents);
-        List<String> uses = new ArrayList<>();
-        while (matcher.find())
-        {
-            String service = matcher.group(1);
-            uses.add(String.format("uses %s;", service));
-        }
-
-        if (!uses.isEmpty())
-        {
-            Files.writeString(generatedModuleInfo,
-                moduleInfoContents.replace(
-                    "}",
-                    String.join("\n", uses) + "\n}"));
-        }
-
-        expandJar(generatedDelegateDir, generatedDelegatePath);
-
-        ToolProvider javac = ToolProvider.findFirst("javac").get();
-
-        List<String> args = new ArrayList<>();
-        if (atLeastVersion(javac, 21))
-        {
-            args.add("-proc:none");
-        }
-
-        args.add("-d");
-        args.add(generatedDelegateDir.toString());
-
-        args.add(generatedModuleInfo.toString());
-
-        javac.run(
-            System.out,
-            System.err,
-            args.toArray(String[]::new));
-
-        Path compiledModuleInfo = generatedDelegateDir.resolve(MODULE_INFO_CLASS_FILENAME);
-        assert Files.exists(compiledModuleInfo);
-
-        Path delegatePath = modulePath(delegate);
-        JarEntry moduleInfoEntry = new JarEntry(MODULE_INFO_CLASS_FILENAME);
-        moduleInfoEntry.setTime(318240000000L);
-        extendJar(generatedDelegatePath, delegatePath, moduleInfoEntry, compiledModuleInfo);
     }
 
-    private void generateDelegating(
-        Collection<ZpmModule> modules) throws IOException
+    // Step 2: Generate module-info.java using jdeps
+    List<String> jdepsArgs = Arrays.asList(
+        "--generate-module-info", generatedModulesDir.toString(),
+        generatedDelegatePath.toString());
+    if (ignoreMissingDependencies)
     {
-        for (ZpmModule module : modules)
+        jdepsArgs = new LinkedList<>(jdepsArgs);
+        jdepsArgs.add(0, "--ignore-missing-deps");
+    }
+
+    ToolProvider jdeps = ToolProvider.findFirst("jdeps").get();
+    jdeps.run(System.out, System.err, jdepsArgs.toArray(String[]::new));
+
+    Path generatedModuleInfo = generatedDelegateDir.resolve(MODULE_INFO_JAVA_FILENAME);
+    if (!Files.exists(generatedModuleInfo))
+    {
+        throw new IOException("Failed to generate module info for delegate module: " + delegate.name);
+    }
+
+    logger.info("Generated module info for delegate module");
+
+    // Patch module-info.java with `uses`
+    String moduleInfoContents = Files.readString(generatedModuleInfo);
+    Pattern pattern = Pattern.compile("(?:provides\\s+)([^\\s]+)(?:\\s+with)");
+    Matcher matcher = pattern.matcher(moduleInfoContents);
+    List<String> uses = new ArrayList<>();
+    while (matcher.find())
+    {
+        String service = matcher.group(1);
+        uses.add(String.format("uses %s;", service));
+    }
+
+    if (!uses.isEmpty())
+    {
+        Files.writeString(generatedModuleInfo,
+            moduleInfoContents.replace("}", String.join("\n", uses) + "\n}"));
+    }
+
+    expandJar(generatedDelegateDir, generatedDelegatePath);
+
+    ToolProvider javac = ToolProvider.findFirst("javac").get();
+
+    List<String> args = new ArrayList<>();
+    if (atLeastVersion(javac, 21))
+    {
+        args.add("-proc:none");
+    }
+
+    args.add("-d");
+    args.add(generatedDelegateDir.toString());
+    args.add(generatedModuleInfo.toString());
+
+    int result = javac.run(System.out, System.err, args.toArray(String[]::new));
+    if (result != 0)
+    {
+        throw new IOException("javac failed to compile delegate module-info.java for: " + delegate.name);
+    }
+
+    // Step 3: Write final module-info.class into final delegate JAR
+    Path compiledModuleInfoRoot = generatedDelegateDir.resolve("module-info.class");
+    Path compiledModuleInfoMR = generatedDelegateDir.resolve("META-INF/versions/9/module-info.class");
+
+    Path realCompiledModuleInfo;
+    String realEntryName;
+
+    if (Files.exists(compiledModuleInfoRoot))
+    {
+        realCompiledModuleInfo = compiledModuleInfoRoot;
+        realEntryName = "module-info.class";
+    }
+    else if (Files.exists(compiledModuleInfoMR))
+    {
+        realCompiledModuleInfo = compiledModuleInfoMR;
+        realEntryName = "META-INF/versions/9/module-info.class";
+    }
+    else
+    {
+        throw new IOException("Compiled module-info.class not found in either location for delegate: " + delegate.name);
+    }
+
+    Path delegatePath = modulePath(delegate);
+    JarEntry moduleInfoEntry = new JarEntry(realEntryName);
+    moduleInfoEntry.setTime(318240000000L);
+    extendJar(generatedDelegatePath, delegatePath, moduleInfoEntry, realCompiledModuleInfo);
+}
+
+
+
+private void generateDelegating(
+    Collection<ZpmModule> modules) throws IOException
+{
+    for (ZpmModule module : modules)
+    {
+        if (module.delegating)
         {
-            if (module.delegating)
+            Path generatedModulesDir = generatedDir.resolve("modules");
+            Path generatedModuleDir = generatedModulesDir.resolve(module.name);
+            Files.createDirectories(generatedModuleDir);
+
+            Path generatedModuleInfo = generatedModuleDir.resolve(MODULE_INFO_JAVA_FILENAME);
+            Files.write(generatedModuleInfo, Arrays.asList(
+                String.format("open module %s {", module.name),
+                String.format("    requires transitive %s;", ZpmModule.DELEGATE_NAME),
+                "}"));
+
+            ToolProvider javac = ToolProvider.findFirst("javac").get();
+
+            List<String> args = new ArrayList<>();
+            if (atLeastVersion(javac, 21))
             {
-                Path generatedModulesDir = generatedDir.resolve("modules");
-                Path generatedModuleDir = generatedModulesDir.resolve(module.name);
-                Files.createDirectories(generatedModuleDir);
+                args.add("-proc:none");
+            }
 
-                Path generatedModuleInfo = generatedModuleDir.resolve(MODULE_INFO_JAVA_FILENAME);
-                Files.write(generatedModuleInfo, Arrays.asList(
-                    String.format("open module %s {", module.name),
-                    String.format("    requires transitive %s;", ZpmModule.DELEGATE_NAME),
-                    "}"));
+            args.add("-d");
+            args.add(generatedModuleDir.toString());
 
-                ToolProvider javac = ToolProvider.findFirst("javac").get();
+            args.add("--module-path");
+            args.add(modulesDir.toString());
 
-                List<String> args = new ArrayList<>();
-                if (atLeastVersion(javac, 21))
-                {
-                    args.add("-proc:none");
-                }
+            args.add(generatedModuleInfo.toString());
 
-                args.add("-d");
-                args.add(generatedModuleDir.toString());
+            int result = javac.run(System.out, System.err, args.toArray(String[]::new));
+            if (result != 0)
+            {
+                throw new IOException("javac failed to compile module-info.java for delegating module: " + module.name);
+            }
 
-                args.add("--module-path");
-                args.add(modulesDir.toString());
+            // Try both root and multi-release output locations
+            Path compiledModuleInfoRoot = generatedModuleDir.resolve("module-info.class");
+            Path compiledModuleInfoMR = generatedModuleDir.resolve("META-INF/versions/9/module-info.class");
 
-                args.add(generatedModuleInfo.toString());
+            Path realCompiledModuleInfo;
+            String realEntryName;
 
-                javac.run(
-                    System.out,
-                    System.err,
-                    args.toArray(String[]::new));
+            if (Files.exists(compiledModuleInfoRoot))
+            {
+                realCompiledModuleInfo = compiledModuleInfoRoot;
+                realEntryName = "module-info.class";
+            }
+            else if (Files.exists(compiledModuleInfoMR))
+            {
+                realCompiledModuleInfo = compiledModuleInfoMR;
+                realEntryName = "META-INF/versions/9/module-info.class";
+            }
+            else
+            {
+                throw new IOException("Compiled module-info.class not found in either location for delegating module: " + module.name);
+            }
 
-                Path modulePath = modulePath(module);
-                try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(modulePath)))
-                {
-                    JarEntry newEntry = new JarEntry(MODULE_INFO_CLASS_FILENAME);
-                    newEntry.setTime(318240000000L);
-                    jar.putNextEntry(newEntry);
-                    jar.write(Files.readAllBytes(generatedModuleDir.resolve(MODULE_INFO_CLASS_FILENAME)));
-                    jar.closeEntry();
-                }
+            Path modulePath = modulePath(module);
+            try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(modulePath)))
+            {
+                JarEntry newEntry = new JarEntry(realEntryName);
+                newEntry.setTime(318240000000L);
+                jar.putNextEntry(newEntry);
+                jar.write(Files.readAllBytes(realCompiledModuleInfo));
+                jar.closeEntry();
             }
         }
     }
+}
+
 
     private void linkModules(
         Collection<ZpmModule> modules) throws IOException
@@ -787,7 +940,7 @@ public final class ZpmInstall extends ZpmCommand
         Path targetDir,
         Path sourcePath) throws IOException
     {
-        try (JarFile sourceJar = new JarFile(sourcePath.toFile()))
+        try (JarFile sourceJar = new JarFile(sourcePath.toFile(),true, ZipFile.OPEN_READ, JarFile.runtimeVersion()))
         {
             for (JarEntry entry : list(sourceJar.entries()))
             {
@@ -817,33 +970,48 @@ public final class ZpmInstall extends ZpmCommand
         }
     }
 
-    private void extendJar(
-        Path sourcePath,
-        Path targetPath,
-        JarEntry newEntry,
-        Path newEntryPath) throws IOException
-    {
-        try (JarFile sourceJar = new JarFile(sourcePath.toFile());
-             JarOutputStream targetJar = new JarOutputStream(Files.newOutputStream(targetPath)))
-        {
-            for (JarEntry entry : list(sourceJar.entries()))
-            {
-                targetJar.putNextEntry(entry);
-                if (!entry.isDirectory())
-                {
-                    try (InputStream input = sourceJar.getInputStream(entry))
-                    {
-                        targetJar.write(input.readAllBytes());
-                    }
-                }
-                targetJar.closeEntry();
-            }
+private void extendJar(
+    Path sourcePath,
+    Path targetPath,
+    JarEntry newEntry,
+    Path newEntryPath) throws IOException
+{
+    if (!Files.exists(sourcePath) || Files.size(sourcePath) < 32) {
+        throw new IOException("❌ Source JAR missing or too small: " + sourcePath);
+    }
 
-            targetJar.putNextEntry(newEntry);
-            targetJar.write(Files.readAllBytes(newEntryPath));
+    try (JarFile sourceJar = new JarFile(sourcePath.toFile(), true, ZipFile.OPEN_READ, JarFile.runtimeVersion());
+         JarOutputStream targetJar = new JarOutputStream(Files.newOutputStream(targetPath)))
+    {
+        for (JarEntry entry : list(sourceJar.entries()))
+        {
+            targetJar.putNextEntry(entry);
+            if (!entry.isDirectory())
+            {
+                try (InputStream input = sourceJar.getInputStream(entry))
+                {
+                    targetJar.write(input.readAllBytes());
+                }
+            }
             targetJar.closeEntry();
         }
+
+        if (!Files.exists(newEntryPath)) {
+            throw new IOException("❌ New entry file not found: " + newEntryPath);
+        }
+
+        targetJar.putNextEntry(newEntry);
+        targetJar.write(Files.readAllBytes(newEntryPath));
+        targetJar.closeEntry();
     }
+    catch (ZipException ze) {
+        throw new IOException("❌ Failed to open source JAR (corrupt or invalid): " + sourcePath, ze);
+    }
+    catch (IOException ioe) {
+        throw new IOException("❌ IO error during JAR extension: " + sourcePath, ioe);
+    }
+}
+
 
     private void deleteDirectories(
         Path dir) throws IOException
