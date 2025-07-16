@@ -1,5 +1,10 @@
 package io.aklivity.zilla.manager.internal.commands.install
+import io.aklivity.zilla.manager.internal.commands.install.model.PromotedModule
+
+import java.nio.file.Path
+import arrow.core.Either
+
 
 interface ModulePromoter {
-    fun promote(jar: Path): Either<ZpmError, Path>
+    fun promote(jar: Path): Either<ZpmError, PromotedModule>
 }

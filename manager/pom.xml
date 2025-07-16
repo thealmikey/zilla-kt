@@ -21,9 +21,17 @@
     <maven.version>3.9.6</maven.version>
     <maven.resolver.version>2.0.3</maven.resolver.version>
     <kotlin.version>2.1.21</kotlin.version>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
   </properties>
 
   <dependencies>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>5.10.1</version>
+        <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>com.github.rvesse</groupId>
       <artifactId>airline</artifactId>
@@ -84,10 +92,18 @@
         </exclusion>
       </exclusions>
     </dependency>
+    <!-- Kotlin test assertions -->
     <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter-engine</artifactId>
-      <scope>test</scope>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-test</artifactId>
+        <version>${kotlin.version}</version>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>5.10.1</version>
+        <scope>test</scope>
     </dependency>
     <dependency>
         <groupId>io.kotest</groupId>
@@ -130,11 +146,34 @@
 
   <build>
     <plugins>
-      <plugin>
+   <plugin>
+  <groupId>org.jetbrains.kotlin</groupId>
+  <artifactId>kotlin-maven-plugin</artifactId>
+  <version>${kotlin.version}</version>
+  <executions>
+    <execution>
+      <id>compile</id>
+      <goals>
+        <goal>compile</goal>
+      </goals>
+    </execution>
+    <execution>
+      <id>test-compile</id>
+      <goals>
+        <goal>test-compile</goal>
+      </goals>
+    </execution>
+  </executions>
+  <configuration>
+    <jvmTarget>21</jvmTarget>
+  </configuration>
+</plugin>
+
+      <!-- <plugin>
         <groupId>org.jasig.maven</groupId>
         <artifactId>maven-notice-plugin</artifactId>
-      </plugin>
-      <plugin>
+      </plugin> -->
+      <!-- <plugin>
         <groupId>com.mycila</groupId>
         <artifactId>license-maven-plugin</artifactId>
         <configuration>
@@ -142,7 +181,7 @@
             <exclude>src/main/java/org/apache/ivy/**</exclude>
           </excludes>
         </configuration>
-      </plugin>
+      </plugin> -->
       <plugin>
         <artifactId>maven-checkstyle-plugin</artifactId>
         <configuration>

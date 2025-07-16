@@ -1,0 +1,13 @@
+package io.aklivity.zilla.manager.internal.commands.install
+
+sealed interface ZpmError {
+    data class LauncherError(val message: String) : ZpmError
+    data class PromotionFailed(val reason: String) : ZpmError
+    data class JlinkError(val message: String) : ZpmError
+    data class InvalidModule(val message: String) : ZpmError
+    data class ModuleNotFound(val moduleName: String) : ZpmError
+    data class ModuleAlreadyExists(val moduleName: String) : ZpmError
+    data class InvalidPath(val path: String) : ZpmError
+    data class ModuleScanFailed(val cause: Throwable) : ZpmError
+    data class PackageFailed(val message: String, val cause: Throwable) : ZpmError
+}
