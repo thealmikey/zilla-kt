@@ -5,6 +5,6 @@ import io.aklivity.zilla.manager.internal.commands.install.model.PackagedModule
 import java.nio.file.Path
 import arrow.core.*
 
-interface ModulePackager {
-  fun packageAll(modules:List<Path>):Either<ZpmError,List<PackagedModule>>
+fun interface ModulePackager {
+    fun packageModule(inputJars: List<Path>, output: Path): Either<ZpmError, Path>
 }

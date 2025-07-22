@@ -9,5 +9,5 @@ sealed interface ZpmError {
     data class ModuleAlreadyExists(val moduleName: String) : ZpmError
     data class InvalidPath(val path: String) : ZpmError
     data class ModuleScanFailed(val cause: Throwable) : ZpmError
-    data class PackageFailed(val message: String, val cause: Throwable) : ZpmError
+    data class PackageFailed(val message: String) : ZpmError
 }
