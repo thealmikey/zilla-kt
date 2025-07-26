@@ -156,6 +156,12 @@
       <goals>
         <goal>compile</goal>
       </goals>
+                  <configuration>
+                <sourceDirs>
+                    <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                    <sourceDir>${project.basedir}/src/main/java</sourceDir>
+                </sourceDirs>
+            </configuration>
     </execution>
     <execution>
       <id>test-compile</id>
@@ -191,6 +197,13 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
+          <configuration>
+          <compilerArgs>
+            <arg>-Xlint:unchecked</arg>
+            <arg>--add-reads</arg>
+            <arg>manager=ALL-UNNAMED</arg>
+          </compilerArgs>
+          </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
