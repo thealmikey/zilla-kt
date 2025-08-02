@@ -5,7 +5,7 @@ import java.nio.file.*
 import io.aklivity.zilla.manager.internal.commands.install.*
 import io.aklivity.zilla.manager.internal.commands.install.model.PromotedModule
 
-class DefaultModulePromoter(
+open class DefaultModulePromoter(
      val dryRun: Boolean = false,
      val feedback: ((String) -> Unit)? = null
 ) : ModulePromoter {
