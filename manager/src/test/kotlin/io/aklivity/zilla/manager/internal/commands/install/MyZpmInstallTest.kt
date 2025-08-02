@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlin.test.assertTrue
+import com.github.ajalt.clikt.core.*
 
 class MyZpmInstallTest {
 

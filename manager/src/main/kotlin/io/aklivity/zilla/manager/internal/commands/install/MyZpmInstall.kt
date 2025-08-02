@@ -15,12 +15,13 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import com.github.ajalt.clikt.parameters.options.convert
 import com.github.ajalt.clikt.parameters.options.required
+import com.github.ajalt.clikt.core.main
 
-class MyZpmInstall : CliktCommand(name = "zpm-install", help = "install and bind jars into one") {
+class MyZpmInstall : CliktCommand(name = "zpm-install") {
 
     val inputJars by argument()
         .multiple()
-        .help("JARs to merge")
+   //     .help("JARs to merge")
 
     val output by option("--output", "-o")
         .convert { Paths.get(it) }
@@ -45,7 +46,7 @@ class MyZpmInstall : CliktCommand(name = "zpm-install", help = "install and bind
             inputJars = inputJars.map { Paths.get(it) },
             outputJar = output
         ).flatMap { mergedJar ->
-            merger.merge(mergedJar)
+            merger.merge(listOf(mergedJar),mergedJar)
         }
 
         result.fold(
