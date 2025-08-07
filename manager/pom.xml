@@ -152,6 +152,38 @@
       <version>5.0.3</version>
       <scope>runtime</scope>
     </dependency>
+
+  <dependency>
+    <groupId>io.github.oshai</groupId>
+    <artifactId>kotlin-logging-jvm</artifactId>
+    <version>7.0.3</version>
+  </dependency>
+  <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-transport-http</artifactId>
+      <version>1.1.0</version>
+  </dependency>
+  <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-connector-basic</artifactId>
+      <version>1.1.0</version>
+  </dependency>
+  <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-impl</artifactId>
+      <version>1.1.0</version>
+  </dependency>
+  <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-util</artifactId>
+      <version>1.1.0</version>
+  </dependency>
+  <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-spi</artifactId>
+      <version>1.1.0</version>
+  </dependency>
+
   </dependencies>
 
   <build>
