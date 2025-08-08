@@ -2,14 +2,13 @@ package io.aklivity.zilla.manager.internal.commands.install.cache
 
 import arrow.core.Option
 import arrow.core.Some
-import org.junit.jupiter.api.*
 import kotlin.test.*
 
 class ZpmDomainModelTest {
 
     @Test
     fun `should format ZpmDependency correctly`() {
-        val dep = ZpmDependency("com.example", "lib", Some("1.0.0"))
+        val dep = ZpmDependencyKt("com.example", "lib", Some("1.0.0"))
         assertEquals("com.example:lib:1.0.0", dep.toString())
     }
 

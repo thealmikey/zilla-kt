@@ -2,7 +2,6 @@ package io.aklivity.zilla.manager.internal.commands.install
 
 import io.aklivity.zilla.manager.internal.commands.install.impl.DefaultModulePromoter
 import io.aklivity.zilla.manager.internal.commands.install.model.PromotedModule
-import org.junit.jupiter.api.*
 import java.nio.file.*
 import kotlin.test.*
 import io.aklivity.zilla.manager.internal.commands.install.ZpmError.PromotionFailed

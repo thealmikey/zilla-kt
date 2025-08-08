@@ -1,6 +1,5 @@
 package io.aklivity.zilla.manager.internal.commands.install.impl
 
-import org.junit.jupiter.api.*
 import java.nio.file.*
 import java.util.jar.*
 import kotlin.test.*

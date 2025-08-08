@@ -7,7 +7,7 @@ import java.nio.file.*
 import java.util.jar.*
 import java.util.zip.ZipFile
 
-class JarCopier(
+open class JarCopier(
     private val dryRun: Boolean = false,
     private val feedback: ((String) -> Unit)? = null
 ) {
@@ -17,7 +17,7 @@ class JarCopier(
     private val excludedClass = "BeanManagerInstanceCreator"
     private val excludedFiles = setOf("module-info.class", "package-info.class")
 
-    fun copyJars(inputJars: List<Path>, outputJar: Path): Either<ZpmError, Path> = Either.catch {
+    open fun copyJars(inputJars: List<Path>, outputJar: Path): Either<ZpmError, Path> = Either.catch {
         Files.createDirectories(outputJar.parent)
 
         val entryNames = mutableSetOf<String>()

@@ -2,15 +2,35 @@ package io.aklivity.zilla.manager.internal.commands.install.cache
 
 import arrow.core.Some
 import arrow.core.getOrElse
-import io.kotest.core.spec.style.StringSpec
-import io.kotest.matchers.collections.shouldBeEmpty
-import io.kotest.matchers.comparables.shouldBeGreaterThan
-import io.kotest.matchers.shouldBe
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.deleteRecursively
+import org.junit.jupiter.api.Assertions.*
+import kotlin.io.path.ExperimentalPathApi
 
-class ZpmCacheKtTest : StringSpec({
-    "should return empty list when no dependencies provided" {
-        val tempDir = Files.createTempDirectory("zpm-cache")
+class ZpmCacheKtTest {
+    private val logger = LoggerFactory.getLogger(ZpmCacheKtTest::class.java)
+    private lateinit var tempDir: Path
+
+    @BeforeEach
+    fun setUp() {
+        tempDir = Files.createTempDirectory("zpm-cache-test")
+        logger.info("Created temporary directory: {}", tempDir)
+    }
+
+    @OptIn(ExperimentalPathApi::class)
+    @AfterEach
+    fun tearDown() {
+        tempDir.deleteRecursively()
+        logger.info("Deleted temporary directory: {}", tempDir)
+    }
+
+    @Test
+    fun `should return empty list when no dependencies provided`() {
         val cache = ZpmCacheKt(
             repositories = ZpmRepositoryConfigKt.defaultRepositories(),
             localCacheDir = tempDir
@@ -18,29 +38,54 @@ class ZpmCacheKtTest : StringSpec({
 
         val result = cache.resolve(emptyList(), emptyList())
 
-        result.isRight() shouldBe true
-//        result.orNull()?.shouldBeEmpty()
+        assertTrue(result.isRight()) { "Expected Right result for empty dependencies" }
+        val resolved = result.getOrElse { emptyList() }
+        assertTrue(resolved.isEmpty()) { "Expected empty list for no dependencies, got $resolved" }
     }
 
-    "should resolve managed dependencies from imports" {
-    val tempDir = Files.createTempDirectory("zpm-cache")
-    val cache = ZpmCacheKt(
-        repositories = ZpmRepositoryConfigKt.defaultRepositories(),
-        localCacheDir = tempDir
-    )
+    @Test
+    fun `should resolve managed dependencies from imports`() {
+        val cache = ZpmCacheKt(
+            repositories = ZpmRepositoryConfigKt.defaultRepositories(),
+            localCacheDir = tempDir
+        )
 
-    val import = ZpmDependencyKt(
-        groupId = "io.aklivity.zilla",
-        artifactId = "runtime",
-        version = Some("0.9.1")
-    )
+        val import = ZpmDependencyKt(
+            groupId = "io.aklivity.zilla",
+            artifactId = "runtime",
+            version = Some("0.9.1")
+        )
 
-    val result = cache.resolveImports(listOf(import))
+        val result = cache.resolveImports(listOf(import))
 
-    result.isRight() shouldBe true
-    val map = result.getOrElse { emptyMap() }
-    map.size shouldBeGreaterThan 3
-    map.keys.forEach { println("Imported: $it → ${map[it]}") }
+        assertTrue(result.isRight()) { "Expected Right result for valid import, got $result" }
+        val dependencyMap = result.getOrElse { emptyMap() }
+        assertTrue(dependencyMap.isNotEmpty()) { "Expected non-empty resolved dependency map" }
+
+        dependencyMap.forEach { (id, artifact) ->
+            logger.info("Resolved: {} to {}", id, artifact.path)
+            assertTrue(artifact.path.toFile().exists()) { "Resolved artifact path does not exist: ${artifact.path}" }
+            assertNotNull(artifact.dependencies)
+        }
+    }
+
+    @Test
+    fun `should handle invalid dependency gracefully`() {
+        val cache = ZpmCacheKt(
+            repositories = ZpmRepositoryConfigKt.defaultRepositories(),
+            localCacheDir = tempDir
+        )
+
+        val invalidImport = ZpmDependencyKt(
+            groupId = "io.aklivity.zilla",
+            artifactId = "nonexistent-artifact",
+            version = Some("0.0.0")
+        )
+
+        val result = cache.resolveImports(listOf(invalidImport))
+
+        assertTrue(result.isLeft()) { "Expected Left result for invalid dependency, got $result" }
+        val error = result.getOrNull()
+        assertTrue(error is ZpmResolutionErrorKt.DependencyResolutionError)
+    }
 }
-
-})

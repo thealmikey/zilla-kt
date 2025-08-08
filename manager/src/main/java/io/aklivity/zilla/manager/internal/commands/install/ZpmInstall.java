@@ -148,6 +148,7 @@ public final class ZpmInstall extends ZpmCommand
             Path zpmFile = configDir.resolve("zpm.json");
 
             logger.info(String.format("reading %s", zpmFile));
+            logger.info(String.format("reading %s", zpmFile));
             config = readOrDefaultConfig(zpmFile);
 
             Path lockFile = lockDir.resolve("zpm-lock.json");

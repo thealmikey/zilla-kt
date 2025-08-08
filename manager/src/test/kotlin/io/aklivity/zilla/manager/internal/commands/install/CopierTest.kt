@@ -2,7 +2,6 @@ package io.aklivity.zilla.manager.internal.commands.install.impl
 
 import io.aklivity.zilla.manager.internal.commands.install.ZpmError
 import kotlin.test.*
-import org.junit.jupiter.api.*
 import java.nio.file.*
 import java.util.jar.*
 import arrow.core.*

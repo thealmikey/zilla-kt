@@ -5,5 +5,5 @@ import java.nio.file.Path
 data class ZpmArtifactKt(
     val id: ZpmArtifactIdKt,
     val path: Path,
-    val dependencies: Set<ZpmArtifactId>
+    val dependencies: Set<ZpmArtifactIdKt>
 )
