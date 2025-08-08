@@ -10,4 +10,7 @@ sealed interface ZpmError {
     data class InvalidPath(val path: String) : ZpmError
     data class ModuleScanFailed(val cause: Throwable) : ZpmError
     data class PackagingFailed(val message: String) : ZpmError
+    data class JarCopyError(val message: String): ZpmError
+    data class ImageLinkError(val message: String): ZpmError
+    data class LauncherWriteError(val message: String): ZpmError
 }

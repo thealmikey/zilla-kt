@@ -1,82 +1,82 @@
 package io.aklivity.zilla.manager.internal.commands.install.impl
 
-import java.nio.file.*
-import java.util.spi.ToolProvider
-import arrow.core.*
-import io.aklivity.zilla.manager.internal.commands.install.ZpmError
+import arrow.core.Either
+import arrow.core.left
+import arrow.core.right
+import io.aklivity.zilla.manager.internal.commands.install.model.ZpmModuleKt
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.jar.JarFile
 
-open class ModuleInfoGenerator(
-    private val ignoreMissingDeps: Boolean = true,
+class ModuleInfoGenerator(
     private val dryRun: Boolean = false,
     private val feedback: ((String) -> Unit)? = null
 ) {
-    open fun generate(inputJar: Path, outputDir: Path): Either<ZpmError, Path> = Either.catch {
-        val jdeps = ToolProvider.findFirst("jdeps")
-            .orElseThrow { RuntimeException("jdeps tool not found") }
-
-        Files.createDirectories(outputDir)
-
-        val args = mutableListOf(
-            "--generate-module-info", outputDir.toString(),
-            inputJar.toString()
-        )
-        if (ignoreMissingDeps) args.add(0, "--ignore-missing-deps")
-
-        feedback?.invoke("📦 Generating module-info.java for: $inputJar")
+    fun generate(jarPath: Path, outputDir: Path, delegate: ZpmModuleKt): Either<ModuleInfoError, Path> {
+        val moduleInfoDir = outputDir.resolve("module-info/zilla-install")
+        val moduleInfoPath = moduleInfoDir.resolve("module-info.java")
+        feedback?.let { it("📄 Generating module-info.java for $jarPath") }
 
         if (dryRun) {
-            feedback?.invoke("🧪 [dry-run] jdeps ${args.joinToString(" ")}")
-
-            val generatedPath = outputDir
-                .resolve(inputJar.nameWithoutExtension())
-                .resolve("module-info.java")
-
-            Files.createDirectories(generatedPath.parent)
-            Files.writeString(
-                generatedPath,
-                "// dry-run module-info for ${inputJar.fileName}"
-            )
-
-            feedback?.invoke("📄 [dry-run] Created placeholder module-info at: $generatedPath")
-
-            return@catch generatedPath
+            feedback?.let { it("📦 Would generate module-info.java for: $jarPath") }
+            Files.createDirectories(moduleInfoDir)
+            Files.writeString(moduleInfoPath, "module zilla.install { // Dry-run module-info }")
+            feedback?.let { it("✅ Generated $moduleInfoPath") }
+            return moduleInfoPath.right()
         }
 
-        val exitCode = jdeps.run(System.out, System.err, *args.toTypedArray())
-        if (exitCode != 0) throw RuntimeException("jdeps failed with exit code $exitCode")
-
-        val generated = outputDir
-            .resolve(inputJar.nameWithoutExtension())
-            .resolve("module-info.java")
-
-        if (!Files.exists(generated)) {
-            throw RuntimeException("module-info.java was not created")
-        }
-
-        patchUsesStatements(generated)
-
-        feedback?.invoke("✅ Generated: $generated")
-        generated
-    }.mapLeft {
-        feedback?.invoke("💥 Error generating module-info: ${it.message}")
-        ZpmError.PackagingFailed("Failed to generate module-info: ${it.message}")
-    }
-
-    private fun patchUsesStatements(moduleInfoPath: Path) {
-        val contents = Files.readString(moduleInfoPath)
-        val pattern = Regex("""provides\s+(\S+)\s+with""")
-        val uses = pattern.findAll(contents).map { "uses ${it.groupValues[1]};" }.toList()
-
-        if (uses.isNotEmpty()) {
-            val patched = contents.replace(
-                "}",
-                uses.joinToString("\n", postfix = "\n}")
-            )
-            Files.writeString(moduleInfoPath, patched)
-            feedback?.invoke("🔧 Patched with uses: ${uses.size} service(s)")
+        return try {
+            Files.createDirectories(moduleInfoDir)
+            feedback?.let { it ("📦 Generating module-info.java for: $jarPath") }
+            val moduleInfoContent = buildString {
+                appendLine("module zilla.install {")
+                if (delegate != null && delegate.paths.isNotEmpty()) {
+                    appendLine("    requires ${delegate.name};")
+                    delegate.paths.forEach { path ->
+                        appendLine("    // Delegated artifact: $path")
+                    }
+                } else {
+                    appendLine("    // No delegate module")
+                }
+                JarFile(jarPath.toFile()).use { jarFile ->
+                    appendLine("    // Classes from $jarPath:")
+                    jarFile.entries().asSequence()
+                        .filter { !it.isDirectory && it.name.endsWith(".class") }
+                        .forEach { appendLine("    // ${it.name}") }
+                }
+                appendLine("}")
+            }
+            Files.writeString(moduleInfoPath, moduleInfoContent)
+            feedback?.let { it("✅ Generated $moduleInfoPath") }
+            moduleInfoPath.right()
+        } catch (e: Exception) {
+            feedback?.let { it("❌ Error generating module-info: ${e.message}") }
+            ModuleInfoError("Failed to generate module-info: ${e.message}").left()
         }
     }
 
-    private fun Path.nameWithoutExtension(): String =
-        fileName.toString().removeSuffix(".jar")
+    fun generateDelegate(delegate: ZpmModuleKt, outputDir: Path): Either<ModuleInfoError, Path> {
+        val moduleInfoDir = outputDir.resolve("module-info/zilla-install")
+        val moduleInfoPath = moduleInfoDir.resolve("module-info.java")
+        feedback?.let { it ("📄 Generating delegate module-info.java for ${delegate.name}") }
+
+        return try {
+            Files.createDirectories(moduleInfoDir)
+            val moduleInfoContent = buildString {
+                appendLine("module ${delegate.name} {")
+                delegate.paths.forEach { path ->
+                    appendLine("    // Delegated artifact: $path")
+                }
+                appendLine("}")
+            }
+            Files.writeString(moduleInfoPath, moduleInfoContent)
+            feedback?.let { it ("✅ Generated delegate $moduleInfoPath") }
+            moduleInfoPath.right()
+        } catch (e: Exception) {
+            feedback?.let { it("❌ Error generating delegate module-info: ${e.message}") }
+            ModuleInfoError("Failed to generate delegate module-info: ${e.message}").left()
+        }
+    }
 }
+
+data class ModuleInfoError(val message: String)

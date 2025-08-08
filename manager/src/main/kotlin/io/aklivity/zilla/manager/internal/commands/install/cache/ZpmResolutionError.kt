@@ -8,4 +8,5 @@ sealed class ZpmResolutionErrorKt: Exception() {
     data class ImportFailure(override val message:String, override val cause:Throwable? =  null): ZpmResolutionErrorKt()
     data class UnexpectedError(override val message: String?, override val cause: Throwable? =null) : ZpmResolutionErrorKt()
     data class InvalidDependencyError(override val message: String) : ZpmResolutionErrorKt()
+    data class NoModulesFound(override val message: String)  : ZpmResolutionErrorKt()
 }

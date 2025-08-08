@@ -1,120 +1,108 @@
-package io.aklivity.zilla.manager.internal.commands.install.impl
+package io.aklivity.zilla.manager.internal.commands.install
 
-import arrow.core.*
-import java.nio.file.*
-import java.util.regex.*
-import java.util.*
-import java.util.spi.ToolProvider
-import java.util.jar.JarOutputStream
-import java.util.jar.*
-import kotlin.test.*
-import java.nio.file.*
-import kotlin.io.path.*
-import java.io.*
-import io.aklivity.zilla.manager.internal.commands.install.ZpmError
-import io.aklivity.zilla.manager.internal.commands.install.ZpmError.PackagingFailed
+import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmResolutionErrorKt
+import io.aklivity.zilla.manager.internal.commands.install.impl.ModuleInfoGenerator
+import io.aklivity.zilla.manager.internal.commands.install.model.ZpmModuleKt
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.readText
 
 class ModuleInfoGeneratorTest {
+    private lateinit var workspace: Path
+    private lateinit var installDir: Path
+    private lateinit var targetJar: Path
+    private lateinit var delegate: ZpmModuleKt
+    private lateinit var feedbackMessages: MutableList<String>
+    private lateinit var feedback: (String) -> Unit
 
-    @Test
-    fun `should generate module-info for valid jar`() {
-        val tempDir = Files.createTempDirectory("zpm-gen-test")
-        val fakeJar = createDummyJar("valid.jar")
-        val outputDir = tempDir.resolve("out")
-
-        val events = mutableListOf<String>()
-        val generator = ModuleInfoGenerator(
-            ignoreMissingDeps = true,
-            dryRun = false,
-            feedback = { events.add(it) }
+    @BeforeEach
+    fun setUp() {
+        workspace = Files.createTempDirectory("zpm-install-test")
+        installDir = workspace.resolve("install")
+        Files.createDirectories(installDir)
+        targetJar = installDir.resolve("zilla-install.jar")
+        delegate = ZpmModuleKt(
+            name = null,
+            id = null,
+            paths = mutableSetOf(workspace.resolve("test.jar"))
         )
-
-        val result = generator.generate(fakeJar, outputDir)
-
-        if (result.isLeft()) {
-            println("WARNING: jdeps not available or test environment lacks toolchain.")
-            println("Error: ${result.swap().getOrNull()}")
-        }
-
-        // Technically may fail if jdeps isn't available; that's OK
-        if (result.isRight()) {
-            val generated = result.getOrNull()!!
-            assertTrue(generated.exists(), "Expected module-info.java to be generated")
-            assertTrue(generated.name.endsWith("module-info.java"))
-        }
+        feedbackMessages = mutableListOf()
+        feedback = { feedbackMessages.add(it) }
     }
 
     @Test
-    fun `should simulate generation in dry run mode`() {
-        val tempDir = Files.createTempDirectory("zpm-dryrun")
-        val fakeJar = createDummyJar("dryrun.jar")
-        val outputDir = tempDir.resolve("out")
+    fun `should generate module-info-java successfully`() {
+        // Given
+        val generator = ModuleInfoGenerator(dryRun = false, feedback = feedback)
 
-        val logs = mutableListOf<String>()
-        val generator = ModuleInfoGenerator(dryRun = true, feedback = { logs.add(it) })
+        // When
+        val result = generator.generate(targetJar, installDir, delegate)
 
-        val result = generator.generate(fakeJar, outputDir)
-
-        assertTrue(result.isRight())
-        val expectedPath = result.getOrNull()!!
-        assertEquals("module-info.java", expectedPath.fileName.toString())
-        assertEquals("dryrun", expectedPath.parent.fileName.toString())
-
+        // Then
+        assertTrue(result.isRight()) { "Expected Right, got $result" }
+        val moduleInfoPath = result.getOrNull()!!
+        assertTrue(Files.exists(moduleInfoPath)) { "module-info.java should exist at $moduleInfoPath" }
+        val content = moduleInfoPath.readText()
+        assertTrue(content.contains("module zilla.install")) { "Expected module zilla.install in $content" }
+        assertTrue(content.contains("requires java.base")) { "Expected requires java.base in $content" }
+        assertTrue(content.contains("requires test")) { "Expected requires test in $content" }
+        assertTrue(feedbackMessages.contains("Generated module-info.java at $moduleInfoPath"))
     }
 
     @Test
-    fun `should patch uses statements in module-info`() {
-        val content = """
-            module example {
-                provides com.foo.Service with com.foo.impl.ServiceImpl;
-                provides com.bar.Service with com.bar.impl.ServiceImpl;
-            }
-        """.trimIndent()
+    fun `should handle dry-run mode`() {
+        // Given
+        val generator = ModuleInfoGenerator(dryRun = true, feedback = feedback)
 
-        val file = Files.createTempDirectory("zpm-uses-patch").resolve("module-info.java")
-        Files.writeString(file, content)
+        // When
+        val result = generator.generate(targetJar, installDir, delegate)
 
-        val logs = mutableListOf<String>()
-        val generator = ModuleInfoGenerator(feedback = { logs.add(it) })
-
-        // Manually call patch function via public method indirectly
-        generator.javaClass.getDeclaredMethod("patchUsesStatements", Path::class.java)
-            .apply { isAccessible = true }
-            .invoke(generator, file)
-
-        val updated = Files.readString(file)
-        assertTrue(updated.contains("uses com.foo.Service;"))
-        assertTrue(updated.contains("uses com.bar.Service;"))
-        assertTrue(logs.any { it.contains("Patched with uses") })
+        // Then
+        assertTrue(result.isRight()) { "Expected Right, got $result" }
+        val moduleInfoPath = result.getOrNull()!!
+        assertTrue(Files.exists(moduleInfoPath)) { "module-info.java should exist at $moduleInfoPath" }
+        assertEquals("// Dry-run module-info.java", moduleInfoPath.readText())
+        assertTrue(feedbackMessages.contains("[dry-run] Would generate module-info.java at $moduleInfoPath"))
     }
 
     @Test
-    fun `should return error for nonexistent jar`() {
-        val fake = Paths.get("nonexistentxyz.jar")
-        val outputDir = Files.createTempDirectory("zpmerror")
+    fun `should fail when installDir is not writable`() {
+        // Given
+        val generator = ModuleInfoGenerator(dryRun = false, feedback = feedback)
+        val nonWritableDir = workspace.resolve("non-writable")
+        Files.createDirectories(nonWritableDir)
+        nonWritableDir.toFile().setReadOnly()
 
-        val generator = ModuleInfoGenerator()
+        // When
+        val result = generator.generate(targetJar, nonWritableDir, delegate)
 
-        val result = generator.generate(fake, outputDir)
-
-        assertTrue(result.isLeft())
-        val error = result.swap().getOrNull()
-        assertIs<PackagingFailed>(error)
-        assertTrue(error.message.contains("Failed to generate"))
+        // Then
+        assertTrue(result.isLeft()) { "Expected Left, got $result" }
+        val error = result.getOrNull() as ZpmResolutionErrorKt
+        assertTrue(error.toString().contains("Failed to generate module-info.java"))
+        assertTrue(feedbackMessages.any { it.contains("Failed to generate module-info.java") })
     }
 
-    fun createDummyJar(name: String): Path {
-        val tempDir = Files.createTempDirectory("zpm-dummy")
-        val jarPath = tempDir.resolve(name)
+    @Test
+    fun `should handle empty delegate paths`() {
+        // Given
+        val generator = ModuleInfoGenerator(dryRun = false, feedback = feedback)
+        val emptyDelegate = ZpmModuleKt(name = null, id = null, paths = mutableSetOf())
 
-        JarOutputStream(Files.newOutputStream(jarPath)).use { out ->
-            val entry = JarEntry("com/example/Dummy.class")
-            out.putNextEntry(entry)
-            out.write(byteArrayOf(0xCA.toByte(), 0xFE.toByte(), 0xBA.toByte(), 0xBE.toByte())) // dummy magic bytes
-            out.closeEntry()
-        }
+        // When
+        val result = generator.generate(targetJar, installDir, emptyDelegate)
 
-        return jarPath
+        // Then
+        assertTrue(result.isRight()) { "Expected Right, got $result" }
+        val moduleInfoPath = result.getOrNull()!!
+        assertTrue(Files.exists(moduleInfoPath)) { "module-info.java should exist at $moduleInfoPath" }
+        val content = moduleInfoPath.readText()
+        assertTrue(content.contains("module zilla.install")) { "Expected module zilla.install in $content" }
+        assertTrue(content.contains("requires java.base")) { "Expected requires java.base in $content" }
+        assertFalse(content.contains("requires test")) { "Expected no additional requires in $content" }
+        assertTrue(feedbackMessages.contains("Generated module-info.java at $moduleInfoPath"))
     }
-
 }
