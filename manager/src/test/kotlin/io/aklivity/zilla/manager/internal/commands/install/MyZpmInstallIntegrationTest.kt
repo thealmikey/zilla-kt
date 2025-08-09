@@ -33,43 +33,43 @@ class MyZpmInstallIntegrationTest {
         }
     }
 
-//    @Test
-//    fun `full pipeline in dry run should succeed`() {
-//        val artifacts = mapOf(
-//            "com.example:my-artifact:1.0.0" to ZpmArtifactKt(path = Path.of("src/test/resources/my-artifact.jar"))
-//        )
-//        val installCommand = ZpmInstallCommand(artifacts = artifacts, dryRun = true)
-//        val result = installCommand.execute()
-//        assertTrue(result.isRight()) { "Install should succeed in dry-run, but got: $result" }
-//    }
-
     @Test
     fun `resolve imports returns correct artifacts`() {
         workspace = Files.createTempDirectory("zpm-install-int")
         val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
         val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
-        val fakeArtifacts: Map<ZpmArtifactIdKt, ZpmArtifactKt> = mapOf(
-            ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0") to ZpmArtifactKt(
+        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
             ),
-            ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0") to ZpmArtifactKt(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
             )
         )
         val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(imports: List<ZpmDependencyKt>): Either<ZpmResolutionErrorKt, Map<ZpmArtifactIdKt, ZpmArtifactKt>> =
+            override fun resolveImports(
+                imports: List<ZpmDependencyKt>,
+                dependencies: List<ZpmDependencyKt>
+            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
                 Either.Right(fakeArtifacts)
         }
         val imports = listOf(
             ZpmDependencyKt.fromCoordinates("io.aklivity:zilla-core:0.9.0")!!,
             ZpmDependencyKt.fromCoordinates("io.aklivity:zilla-binding-mqtt:0.9.0")!!
         )
-        val result = fakeCache.resolveImports(imports)
+        val dependencies = emptyList<ZpmDependencyKt>()
+        val result = fakeCache.resolveImports(imports, dependencies)
         assertTrue(result.isRight(), "resolveImports should succeed, but got: ${result.leftOrNull()}")
         val artifacts = result.getOrNull()!!
         assertTrue(artifacts.size == 2, "Should resolve 2 artifacts, got ${artifacts.size}")
-        assertTrue(artifacts.containsKey(ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0")), "Should contain zilla-core")
-        assertTrue(artifacts.containsKey(ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0")), "Should contain zilla-binding-mqtt")
+        assertTrue(
+            artifacts.any { it.id == ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0") },
+            "Should contain zilla-core"
+        )
+        assertTrue(
+            artifacts.any { it.id == ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0") },
+            "Should contain zilla-binding-mqtt"
+        )
     }
 
     @Test
@@ -84,17 +84,20 @@ class MyZpmInstallIntegrationTest {
         val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
         val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
 
-        val fakeArtifacts: Map<ZpmArtifactIdKt, ZpmArtifactKt> = mapOf(
-            ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0") to ZpmArtifactKt(
+        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
             ),
-            ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0") to ZpmArtifactKt(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
             )
         )
 
         val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(imports: List<ZpmDependencyKt>): Either<ZpmResolutionErrorKt, Map<ZpmArtifactIdKt, ZpmArtifactKt>> =
+            override fun resolveImports(
+                imports: List<ZpmDependencyKt>,
+                dependencies: List<ZpmDependencyKt>
+            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
                 Either.Right(fakeArtifacts)
         }
 
@@ -113,8 +116,8 @@ class MyZpmInstallIntegrationTest {
 
         val template = ZpmTemplate(
             repositories = listOf("https://repo.maven.apache.org/maven2"),
-            imports = listOf("io.aklivity:zilla-core:0.9.0", "io.aklivity:zilla-binding-mqtt:0.9.0"),
-            dependencies = emptyList()
+            imports = listOf("io.aklivity:zilla-core:0.9.0"),
+            dependencies = listOf("io.aklivity:zilla-binding-mqtt:0.9.0")
         )
         val json = Json { prettyPrint = true }
         val templatePath = workspace!!.resolve("zpm.json")
@@ -153,7 +156,7 @@ class MyZpmInstallIntegrationTest {
         assertTrue(feedbackMessages.any { it.contains("Would write launcher") }, "Should log launcher generation in dry-run")
         assertTrue(feedbackMessages.any { it.contains("Checking template: $templatePath") }, "Should log template check")
         assertTrue(feedbackMessages.any { it.contains("Parsing template: $templatePath") }, "Should log template parsing")
-        assertTrue(feedbackMessages.any { it.contains("Resolved 2 dependencies") }, "Should log dependency resolution")
+        assertTrue(feedbackMessages.any { it.contains("Resolved 1 imports and 1 dependencies") }, "Should log dependency resolution")
         assertTrue(feedbackMessages.any { it.contains("Copying 2 JARs to zilla-install.jar") }, "Should log JAR copying")
         assertTrue(feedbackMessages.any { it.contains("Merging manifests") }, "Should log manifest merging")
         assertTrue(feedbackMessages.any { it.contains("Generating module-info.java") }, "Should log module info generation")
@@ -175,17 +178,20 @@ class MyZpmInstallIntegrationTest {
         val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
         val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
 
-        val fakeArtifacts: Map<ZpmArtifactIdKt, ZpmArtifactKt> = mapOf(
-            ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0") to ZpmArtifactKt(
+        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
             ),
-            ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0") to ZpmArtifactKt(
+            ZpmArtifactKt(
                 ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
             )
         )
 
         val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(imports: List<ZpmDependencyKt>): Either<ZpmResolutionErrorKt, Map<ZpmArtifactIdKt, ZpmArtifactKt>> =
+            override fun resolveImports(
+                imports: List<ZpmDependencyKt>,
+                dependencies: List<ZpmDependencyKt>
+            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
                 Either.Right(fakeArtifacts)
         }
 
@@ -204,8 +210,8 @@ class MyZpmInstallIntegrationTest {
 
         val template = ZpmTemplate(
             repositories = listOf("https://repo.maven.apache.org/maven2"),
-            imports = listOf("io.aklivity:zilla-core:0.9.0", "io.aklivity:zilla-binding-mqtt:0.9.0"),
-            dependencies = emptyList()
+            imports = listOf("io.aklivity:zilla-core:0.9.0"),
+            dependencies = listOf("io.aklivity:zilla-binding-mqtt:0.9.0")
         )
         val json = Json { prettyPrint = true }
         val templatePath = workspace!!.resolve("zpm.json")
@@ -218,14 +224,13 @@ class MyZpmInstallIntegrationTest {
             println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
         }
 
-        if (result.isLeft() && feedbackMessages.any { it.contains("jlink tool not found") }) {
-            println("Skipping non-dry-run test due to missing jlink")
-            return
-        }
-
-        assertTrue(result.isRight(), "Install should succeed, but got: ${result.leftOrNull()}")
+        assertTrue(result.isRight(), "Install should succeed in non-dry-run, but got: ${result.leftOrNull()}")
         val lockFile = installDir.resolve("zpm.lock")
         assertTrue(lockFile.exists(), "zpm.lock should be written")
+        val lockContent = Files.readString(lockFile)
+        assertTrue(lockContent.contains("zilla-core"), "Lock file should contain zilla-core")
+        assertTrue(lockContent.contains("zilla-binding-mqtt"), "Lock file should contain zilla-binding-mqtt")
+
         val expandedDir = installDir.resolve("modules/zilla-install")
         assertTrue(expandedDir.exists(), "Expanded directory should exist")
         assertTrue(expandedDir.resolve("com/example/CoreDummy.class").exists(), "Core expanded file should exist")
@@ -257,8 +262,11 @@ class MyZpmInstallIntegrationTest {
         val feedbackMessages = mutableListOf<String>()
         val installer = MyZpmInstall(
             cache = object : ZpmCacheKt(emptyList(), workspace!!) {
-                override fun resolveImports(imports: List<ZpmDependencyKt>): Either<ZpmResolutionErrorKt, Map<ZpmArtifactIdKt, ZpmArtifactKt>> =
-                    Either.Right(emptyMap())
+                override fun resolveImports(
+                    imports: List<ZpmDependencyKt>,
+                    dependencies: List<ZpmDependencyKt>
+                ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
+                    Either.Right(emptyList())
             },
             installDir = workspace!!,
             jarCopier = JarCopier(dryRun = true, feedback = { feedbackMessages.add(it) }),

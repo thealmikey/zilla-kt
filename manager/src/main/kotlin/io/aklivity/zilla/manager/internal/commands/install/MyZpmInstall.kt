@@ -49,7 +49,7 @@ class MyZpmInstall(
         return checkTemplate(templatePath, feedback)
             .flatMap { parseTemplate(templatePath, feedback) }
             .flatMap { template -> resolveDependencies(template, feedback) }
-            .flatMap { artifactsMap -> discoverAndMigrateModules(artifactsMap, feedback) }
+            .flatMap { artifacts -> discoverAndMigrateModules(artifacts, feedback) }
             .flatMap { delegate -> processModules(delegate, feedback) }
             .flatMap { targetJar -> generateAndCompileModuleInfo(targetJar, feedback) }
             .flatMap { targetJar -> linkImageAndWriteLauncher(targetJar, feedback) }
@@ -78,25 +78,23 @@ class MyZpmInstall(
     }
 
     // Step 3: Resolve dependencies
-    private fun resolveDependencies(template: ZpmTemplate, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Map<ZpmArtifactIdKt, ZpmArtifactKt>> {
+    private fun resolveDependencies(template: ZpmTemplate, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
         feedback?.invoke("🔍 Converting ${template.imports.size} imports and ${template.dependencies.size} dependencies")
         val imports = template.imports.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
         val deps = template.dependencies.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
-        val toResolve = imports + deps
-        feedback?.invoke("✅ Resolved ${toResolve.size} dependencies")
+        feedback?.invoke("✅ Resolved ${imports.size} imports and ${deps.size} dependencies")
 
         feedback?.invoke("📦 Resolving dependencies via cache")
-        return cache.resolveImports(toResolve)
-            .mapLeft {
-            feedback?.invoke("❌ Dependency resolution failed: ${it.toString()}")
+        return cache.resolveImports(imports, deps).mapLeft {
+            feedback?.invoke("❌ Dependency resolution failed: ${it.message}")
             it
         }
     }
 
     // Step 4: Discover and migrate modules
-    private fun discoverAndMigrateModules(artifactsMap: Map<ZpmArtifactIdKt, ZpmArtifactKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmModuleKt> {
+    private fun discoverAndMigrateModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmModuleKt> {
         val delegate = ZpmModuleKt(name = null, id = null, paths = mutableSetOf())
-        val modules = discoverModules(artifactsMap,null).toMutableList()
+        val modules = discoverModules(artifacts, feedback).toMutableList()
         feedback?.invoke("MIKE discovered ${modules.size} modules")
 
         return migrateUnnamed(modules, delegate).mapLeft { errors: NonEmptyList<String> ->
@@ -132,6 +130,7 @@ class MyZpmInstall(
             targetJar
         }
     }
+
     // Step 6: Generate and compile module-info
     private fun generateAndCompileModuleInfo(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> {
         feedback?.invoke("📝 Merging manifests")
@@ -175,7 +174,7 @@ class MyZpmInstall(
         }.flatMap { imagePath ->
             feedback?.invoke("✅ Linked runtime image: $imagePath")
             feedback?.invoke("📝 Writing lock file")
-            val lockPath = writeLockFile(imagePath, emptyMap()) // Adjust based on actual artifactsMap usage
+            val lockPath = writeLockFile(imagePath, emptyList()) // Adjust based on actual artifacts usage
             feedback?.invoke("✅ Wrote lock file: $lockPath")
             feedback?.invoke("📜 Generating launcher")
             launcherWriter.write("io.aklivity.zilla.runtime.command", installDir).mapLeft {
@@ -189,14 +188,14 @@ class MyZpmInstall(
     }
 
     private fun discoverModules(
-        artifacts: Map<ZpmArtifactIdKt, ZpmArtifactKt>,
+        artifacts: List<ZpmArtifactKt>,
         feedback: ((String) -> Unit)?
     ): Collection<ZpmModuleKt> {
         feedback?.invoke("🔍 Discovering modules from ${artifacts.size} artifacts")
         val modules = mutableListOf<ZpmModuleKt>()
 
-        artifacts.forEach { (artifactId, artifact) ->
-            val coordinate = artifactId.toString()
+        artifacts.forEach { artifact ->
+            val coordinate = artifact.id.toString()
             if (!isValidArtifactCoordinate(coordinate)) {
                 feedback?.invoke("⚠️ Skipping invalid artifact coordinate: $coordinate")
                 return@forEach
@@ -208,12 +207,12 @@ class MyZpmInstall(
 
             if (moduleRefs.isEmpty()) {
                 feedback?.invoke("✅ Found unnamed module for $coordinate")
-                modules.add(ZpmModuleKt(name = null, id = artifactId, paths = mutableSetOf(artifact.path)))
+                modules.add(ZpmModuleKt(name = null, id = artifact.id, paths = mutableSetOf(artifact.path)))
             } else {
                 moduleRefs.forEach { moduleRef ->
                     val descriptor = moduleRef.descriptor()
                     feedback?.invoke("✅ Found module: ${descriptor.name()}")
-                    modules.add(ZpmModuleKt(name = descriptor.name(), id = artifactId, paths = mutableSetOf(artifact.path)))
+                    modules.add(ZpmModuleKt(name = descriptor.name(), id = artifact.id, paths = mutableSetOf(artifact.path)))
                 }
             }
         }
@@ -267,7 +266,7 @@ class MyZpmInstall(
     ): Either<NonEmptyList<String>, Unit> {
         feedback?.invoke("🔗 Starting delegation of automatic modules")
         val errors = mutableListOf<String>()
-        val modulesMap = modules.associateBy<ZpmModuleKt, ZpmArtifactIdKt?> { it.id as ZpmArtifactIdKt? }
+        val modulesMap = modules.associateBy { it.id }
         var delegatedCount = 0
         modules.forEach { module ->
             if (module.automatic) {
@@ -446,10 +445,10 @@ class MyZpmInstall(
         ZpmResolutionErrorKt.DependencyResolutionError("Failed to compile module-info: ${it.message}")
     }
 
-    private fun writeLockFile(templatePath: Path, artifacts: Map<ZpmArtifactIdKt, ZpmArtifactKt>): Path {
+    private fun writeLockFile(templatePath: Path, artifacts: List<ZpmArtifactKt>): Path {
         val lockPath = installDir.resolve("zpm.lock")
         feedback?.invoke("📝 Preparing lock file with ${artifacts.size} artifacts")
-        val lines = artifacts.entries.map { "${it.key} -> ${it.value.path}" }
+        val lines = artifacts.map { "${it.id} -> ${it.path}" }
         try {
             Files.createDirectories(lockPath.parent)
             if (dryRun) {
