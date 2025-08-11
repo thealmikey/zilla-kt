@@ -49,8 +49,13 @@ class MyZpmInstall(
         return checkTemplate(templatePath, feedback)
             .flatMap { parseTemplate(templatePath, feedback) }
             .flatMap { template -> resolveDependencies(template, feedback) }
-            .flatMap { artifacts -> discoverAndMigrateModules(artifacts, feedback) }
-            .flatMap { delegate -> processModules(delegate, feedback) }
+            .flatMap { artifacts ->
+                discoverAndMigrateModules(artifacts, feedback).flatMap { delegate ->
+                    generateSystemOnlyAutomatic(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), emptySet(), false, true) }, feedback)
+                        .flatMap { processModules(delegate, artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), emptySet(), false, true) }, feedback) }
+                        .flatMap { targetJar -> generateDelegating(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), emptySet(), true, true) }, feedback).map { targetJar } }
+                }
+            }
             .flatMap { targetJar -> generateAndCompileModuleInfo(targetJar, feedback) }
             .flatMap { targetJar -> linkImageAndWriteLauncher(targetJar, feedback) }
     }
@@ -110,26 +115,132 @@ class MyZpmInstall(
     }
 
     // Step 5: Process modules (expand and copy JARs)
+
     private fun processModules(
         delegate: ZpmModuleKt,
+        modules: Collection<ZpmModuleKt>,
         feedback: ((String) -> Unit)?
     ): Either<ZpmResolutionErrorKt, Path> {
-        val modulePaths = delegate.paths.flatMap { it }.toSet()
-        if (modulePaths.isEmpty()) {
-            feedback?.invoke("⚠️ No modules to process, skipping JAR creation")
-            return ZpmResolutionErrorKt.NoModulesFound("No modules found to create JAR").left()
+        feedback?.invoke("📦 Processing modules")
+        val nonDelegating = modules.filterNot { it.delegating }
+        nonDelegating.forEach { module ->
+            val artifactPath = module.paths.first()
+            val modulePath = modulesDir.resolve("${module.name}.jar")
+            Files.copy(artifactPath, modulePath, StandardCopyOption.REPLACE_EXISTING)
+            feedback?.invoke("✅ Copied non-delegating module: ${module.name}")
         }
 
-        val targetJar = installDir.resolve("zilla-install.jar")
-        feedback?.invoke("📦 Starting copy of ${modulePaths.size} JARs to $targetJar")
-        return jarCopier.copyJars(modulePaths.toList(), targetJar).mapLeft {
-            feedback?.invoke("❌ Failed to copy JARs: $it")
-            ZpmResolutionErrorKt.DependencyResolutionError("Failed to copy JARs: $it")
-        }.map {
-            feedback?.invoke("✅ Copied JARs to $targetJar")
-            targetJar
+        if (delegate.paths.isEmpty()) {
+            feedback?.invoke("⚠️ No delegate paths to process")
+            return modulesDir.right()
         }
+
+        val targetJar = modulesDir.resolve("zilla.delegate.jar")
+        feedback?.invoke("📦 Generating delegate JAR: $targetJar")
+        jarCopier.copyJars(delegate.paths.toList(), targetJar).mapLeft {
+            feedback?.invoke("❌ Failed to copy delegate JARs: $it")
+            ZpmResolutionErrorKt.DependencyResolutionError("Failed to copy delegate JARs: $it")
+        }.orThrow()
+
+        generateDelegate(delegate, targetJar, feedback).orThrow()
+        feedback?.invoke("✅ Generated delegate JAR: $targetJar")
+        return targetJar.right()
     }
+
+    private fun generateDelegate(
+        delegate: ZpmModuleKt,
+        targetJar: Path,
+        feedback: ((String) -> Unit)?
+    ): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
+        feedback?.invoke("📝 Generating delegate module: ${delegate.name ?: "zilla.delegate"}")
+        val generatedModulesDir = installDir.resolve("generated/modules").createDirectories()
+        val generatedDelegateDir = generatedModulesDir.resolve(delegate.name ?: "zilla.delegate").createDirectories()
+
+        // Merge services and filter entries
+        val services = mutableMapOf<String, MutableList<String>>()
+        val entryNames = mutableSetOf<String>()
+        val excludedPackage = Paths.get("org", "eclipse", "yasson", "internal", "components")
+        val excludedClass = "BeanManagerInstanceCreator"
+
+        JarOutputStream(Files.newOutputStream(targetJar)).use { jar ->
+            for (path in delegate.paths) {
+                JarFile(path.toFile(), true, ZipFile.OPEN_READ, JarFile.runtimeVersion()).use { artifactJar ->
+                    artifactJar.entries().asSequence().forEach { entry ->
+                        val entryPath = Paths.get(entry.name)
+                        if (entry.name == "module-info.class" ||
+                            entry.name == "META-INF/versions/9/module-info.class" ||
+                            entryPath.endsWith("package-info.class") ||
+                            (entryPath.startsWith(excludedPackage) && entryPath.fileName.toString().startsWith(excludedClass))
+                        ) {
+                            return@forEach
+                        }
+                        if (entryPath.startsWith(Paths.get("META-INF", "services")) &&
+                            entryPath.nameCount - Paths.get("META-INF", "services").nameCount == 1
+                        ) {
+                            val serviceName = entryPath.fileName.toString()
+                            val serviceImpl = artifactJar.getInputStream(entry).readAllBytes().toString(Charsets.UTF_8)
+                            services.computeIfAbsent(serviceName) { mutableListOf() }
+                                .addAll(serviceImpl.split("\n").filter { it.isNotBlank() })
+                        } else if (entryNames.add(entry.name)) {
+                            jar.putNextEntry(entry)
+                            if (!entry.isDirectory) {
+                                artifactJar.getInputStream(entry).use { jar.write(it.readAllBytes()) }
+                            }
+                            jar.closeEntry()
+                        }
+                    }
+                }
+            }
+            services.forEach { (name, impls) ->
+                val servicePath = Paths.get("META-INF/services/$name")
+                val entry = JarEntry(servicePath.toString()).apply { time = 318240000000L }
+                jar.putNextEntry(entry)
+                jar.write(impls.joinToString("\n").toByteArray(Charsets.UTF_8))
+                jar.closeEntry()
+            }
+        }
+
+        // Generate module-info.java
+        val jdeps = ToolProvider.findFirst("jdeps").orElseThrow { IllegalStateException("jdeps not found") }
+        val jdepsArgs = mutableListOf("--generate-module-info", generatedModulesDir.toString(), targetJar.toString())
+        if (ignoreMissingDependencies) jdepsArgs.add(0, "--ignore-missing-deps")
+        jdeps.run(System.out, System.err, *jdepsArgs.toTypedArray())
+
+        val moduleInfo = generatedDelegateDir.resolve("module-info.java")
+        if (!moduleInfo.exists()) throw IOException("Failed to generate module-info for delegate")
+
+        // Patch with uses clauses
+        val content = moduleInfo.readText()
+        val uses = Regex("provides\\s+([^\\s]+)\\s+with").findAll(content).map { "uses ${it.groupValues[1]};" }.toList()
+        if (uses.isNotEmpty()) {
+            Files.writeString(moduleInfo, content.replace("}", "${uses.joinToString("\n")}\n}"))
+        }
+
+        expandJar(targetJar, generatedDelegateDir).orThrow()
+
+        // Compile module-info.java
+        val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
+        val javacArgs = mutableListOf<String>()
+        if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
+        javacArgs.addAll(listOf("-d", generatedDelegateDir.toString(), moduleInfo.toString()))
+
+        val javacExitCode = javac.run(System.out, System.err, *javacArgs.toTypedArray())
+        if (javacExitCode != 0) throw IOException("javac failed for delegate")
+
+        val moduleInfoClass = generatedDelegateDir.resolve("module-info.class")
+        val multiReleaseModuleInfo = generatedDelegateDir.resolve("META-INF/versions/9/module-info.class")
+        val (realModuleInfo, entryName) = if (moduleInfoClass.exists()) {
+            moduleInfoClass to "module-info.class"
+        } else if (multiReleaseModuleInfo.exists()) {
+            multiReleaseModuleInfo to "META-INF/versions/9/module-info.class"
+        } else {
+            throw IOException("module-info.class not found for delegate")
+        }
+
+        val finalJar = modulesDir.resolve("zilla.delegate.jar")
+        val moduleInfoEntry = JarEntry(entryName).apply { time = 318240000000L }
+        extendJar(targetJar, finalJar, moduleInfoEntry, realModuleInfo).orThrow()
+    }.mapLeft { ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error") }
 
     // Step 6: Generate and compile module-info
     private fun generateAndCompileModuleInfo(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> {
@@ -463,4 +574,122 @@ class MyZpmInstall(
         }
         return lockPath
     }
+
+    open fun generateSystemOnlyAutomatic(modules: Collection<ZpmModuleKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
+        feedback?.invoke("⚙️ Generating system-only automatic modules")
+        val promotions = mutableMapOf<ZpmModuleKt, Path>()
+        val jdeps = ToolProvider.findFirst("jdeps").orElseThrow { IllegalStateException("jdeps not found") }
+        val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
+
+        for (module in modules) {
+            if (!module.automatic || module.depends.isNotEmpty()) continue
+            val artifactPath = module.paths.first()
+            if (jarIsModular(artifactPath)) {
+                feedback?.invoke("✅ Skipping already-modular JAR: ${module.name}")
+                continue
+            }
+
+            val generatedModulesDir = installDir.resolve("generated/modules").createDirectories()
+            val generatedModuleDir = generatedModulesDir.resolve(module.name ?: "unnamed").createDirectories()
+            val jdepsArgs = mutableListOf("--generate-open-module")
+            if (ignoreMissingDependencies) jdepsArgs.add("--ignore-missing-deps")
+            jdepsArgs.add(generatedModulesDir.toString())
+            jdepsArgs.add(artifactPath.toString())
+
+            val exitCode = jdeps.run(System.out, System.err, *jdepsArgs.toTypedArray())
+            if (exitCode != 0 && !ignoreMissingDependencies) {
+                throw IOException("jdeps failed for ${module.name}")
+            }
+
+            val generatedModuleInfo = generatedModuleDir.resolve("module-info.java")
+            if (!generatedModuleInfo.exists()) {
+                feedback?.invoke("⚠️ module-info.java not found for ${module.name}")
+                continue
+            }
+
+            expandJar(artifactPath, generatedModuleDir).orThrow()
+            val javacArgs = mutableListOf<String>()
+            if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
+            javacArgs.addAll(listOf("-d", generatedModuleDir.toString(), generatedModuleInfo.toString()))
+
+            val javacExitCode = javac.run(System.out, System.err, *javacArgs.toTypedArray())
+            if (javacExitCode != 0) throw IOException("javac failed for ${module.name}")
+
+            val moduleInfoClass = generatedModuleDir.resolve("module-info.class")
+            val multiReleaseModuleInfo = generatedModuleDir.resolve("META-INF/versions/9/module-info.class")
+            val (realModuleInfo, entryName) = if (moduleInfoClass.exists()) {
+                moduleInfoClass to "module-info.class"
+            } else if (multiReleaseModuleInfo.exists()) {
+                multiReleaseModuleInfo to "META-INF/versions/9/module-info.class"
+            } else {
+                throw IOException("module-info.class not found for ${module.name}")
+            }
+
+            val generatedModulePath = generatedModulesDir.resolve("${module.name}.jar")
+            val moduleInfoEntry = JarEntry(entryName).apply { time = 318240000000L }
+            extendJar(artifactPath, generatedModulePath, moduleInfoEntry, realModuleInfo).orThrow()
+            promotions[module] = generatedModulePath
+        }
+
+        modules.removeAll(promotions.keys)
+        promotions.forEach { (module, newPath) ->
+            val descriptor = moduleDescriptor(newPath) ?: throw IOException("Failed to load descriptor for ${module.name}")
+            modules.add(ZpmModuleKt(descriptor.name(), module.id, mutableSetOf(newPath), module.depends, false, module.automatic))
+        }
+    }.mapLeft { ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error") }
+
+    private fun jarIsModular(jarPath: Path): Boolean = Either.catch {
+        FileSystems.newFileSystem(jarPath, null as ClassLoader?).use { fs ->
+            fs.getPath("/module-info.class").exists() || fs.getPath("/META-INF/versions/9/module-info.class").exists()
+        }
+    }.getOrElse { false }
+
+    private fun atLeastVersion(tool: ToolProvider, major: Int): Boolean {
+        val out = ByteArrayOutputStream()
+        tool.run(PrintStream(out), System.err, "--version")
+        val matcher = Regex("""(\d+)\.""").find(out.toString(Charsets.UTF_8))
+        return matcher?.groups?.get(1)?.value?.toIntOrNull()?.let { it >= major } ?: false
+    }
+
+    open fun generateDelegating(modules: Collection<ZpmModuleKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
+        feedback?.invoke("📝 Generating delegating modules")
+        val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
+        val generatedModulesDir = installDir.resolve("generated/modules").createDirectories()
+
+        for (module in modules.filter { it.delegating }) {
+            val generatedModuleDir = generatedModulesDir.resolve(module.name ?: "unnamed").createDirectories()
+            val moduleInfo = generatedModuleDir.resolve("module-info.java")
+            Files.write(moduleInfo, """
+            open module ${module.name} {
+                requires transitive zilla.delegate;
+            }
+        """.trimIndent().toByteArray())
+
+            val javacArgs = mutableListOf<String>()
+            if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
+            javacArgs.addAll(listOf("--module-path", modulesDir.toString(), "-d", generatedModuleDir.toString(), moduleInfo.toString()))
+
+            val exitCode = javac.run(System.out, System.err, *javacArgs.toTypedArray())
+            if (exitCode != 0) throw IOException("javac failed for ${module.name}")
+
+            val moduleInfoClass = generatedModuleDir.resolve("module-info.class")
+            val multiReleaseModuleInfo = generatedModuleDir.resolve("META-INF/versions/9/module-info.class")
+            val (realModuleInfo, entryName) = if (moduleInfoClass.exists()) {
+                moduleInfoClass to "module-info.class"
+            } else if (multiReleaseModuleInfo.exists()) {
+                multiReleaseModuleInfo to "META-INF/versions/9/module-info.class"
+            } else {
+                throw IOException("module-info.class not found for ${module.name}")
+            }
+
+            val modulePath = modulesDir.resolve("${module.name}.jar")
+            JarOutputStream(Files.newOutputStream(modulePath)).use { jar ->
+                val entry = JarEntry(entryName).apply { time = 318240000000L }
+                jar.putNextEntry(entry)
+                jar.write(Files.readAllBytes(realModuleInfo))
+                jar.closeEntry()
+            }
+            feedback?.invoke("✅ Generated delegating module: ${module.name}")
+        }
+    }.mapLeft { ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error") }
 }

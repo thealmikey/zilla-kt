@@ -15,4 +15,5 @@
  */
 module io.aklivity.zilla.manager
 {
+    requires kotlin.stdlib;
 }
