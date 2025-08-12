@@ -103,7 +103,7 @@ class InstallCommand : CliktCommand(name = "install") {
 }
 
 class CleanCommand : CliktCommand(name = "clean") {
-    private val installDir: String by option("--install-dir", "-d", help = "Installation directory").default(".zpm")
+    private val installDir: String by option("--install-dir", "-d", help = "Installation directory").default(".m2")
     private val keepImage: Boolean by option("--keep-image", help = "Keep the runtime image").flag(default = false)
     private val logger = LoggerFactory.getLogger(CleanCommand::class.java)
 

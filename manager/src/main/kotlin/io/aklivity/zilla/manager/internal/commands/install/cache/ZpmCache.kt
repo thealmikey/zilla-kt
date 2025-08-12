@@ -4,17 +4,12 @@ import arrow.core.Either
 import arrow.core.getOrElse
 import arrow.core.left
 import arrow.core.right
-import io.github.oshai.kotlinlogging.KotlinLogging
-import org.eclipse.aether.AbstractRepositoryListener
-import org.eclipse.aether.RepositoryEvent
-import org.eclipse.aether.RepositorySystem
-import org.eclipse.aether.RepositorySystemSession
+import org.eclipse.aether.*
 import org.eclipse.aether.artifact.DefaultArtifact
+import org.eclipse.aether.collection.CollectRequest
 import org.eclipse.aether.graph.Dependency
-import org.eclipse.aether.graph.DependencyNode
 import org.eclipse.aether.repository.LocalRepository
 import org.eclipse.aether.repository.RemoteRepository
-import org.eclipse.aether.collection.CollectRequest
 import org.eclipse.aether.resolution.*
 import org.eclipse.aether.transfer.AbstractTransferListener
 import org.eclipse.aether.transfer.TransferEvent
@@ -22,6 +17,8 @@ import org.eclipse.aether.transfer.TransferResource
 import org.eclipse.aether.util.artifact.JavaScopes
 import org.eclipse.aether.util.graph.visitor.NodeListGenerator
 import org.eclipse.aether.util.graph.visitor.PreorderDependencyNodeConsumerVisitor
+import java.io.File
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.text.DecimalFormat
@@ -32,126 +29,173 @@ open class ZpmCacheKt(
     private val localCacheDir: Path = Paths.get(System.getProperty("user.home"), ".m2", "repository"),
     private val zpmCacheDir: Path = Paths.get(System.getProperty("user.home"), ".zpm", "cache")
 ) {
-    private val logger = KotlinLogging.logger {}
     private val system: RepositorySystem = ZpmRepositoryConfigKt.newRepositorySystem()
     private val seenArtifacts = ConcurrentHashMap.newKeySet<String>()
 
     private val session: RepositorySystemSession =
         ZpmRepositoryConfigKt.newRepositorySystemSessionBuilder(system, localCacheDir)
-            .setRepositoryListener(LoggingRepositoryListener())
             .setTransferListener(LoggingTransferListener())
-            .setConfigProperty("aether.conflictResolver.verbose", true)
+            .setSystemProperties(System.getProperties())
             .let { baseSession ->
                 object : RepositorySystemSession by baseSession {
+                    // Force offline to ensure local repo usage only (optional, comment out if fetching remotes)
+                    override fun isOffline(): Boolean = false
                     override fun getLocalRepository(): LocalRepository = LocalRepository(localCacheDir.toFile())
                 }
             }
 
-    open fun resolveImports(imports: List<ZpmDependencyKt>, dependencies: List<ZpmDependencyKt>): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
-        logger.debug { "[START] Resolving imports=$imports, dependencies=$dependencies (localCacheDir=$localCacheDir)" }
+    open fun resolveImports(
+        imports: List<ZpmDependencyKt>,
+        dependencies: List<ZpmDependencyKt>
+    ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
+        println("=== [START] Resolving imports=${imports.size}, dependencies=${dependencies.size} ===")
+
         val artifacts = mutableListOf<ZpmArtifactKt>()
         val imported = mutableMapOf<ZpmDependencyKt, String>()
 
-        // Step 1: Resolve imports (POMs) to extract managed dependencies
+        // Step 1: Resolve imports (POMs)
         imports.forEach { imp ->
             try {
                 val artifactVersion = imp.version.getOrElse { "develop-SNAPSHOT" }
                 val artifact = DefaultArtifact(imp.groupId, imp.artifactId, "pom", artifactVersion)
                 val artifactIdStr = "${imp.groupId}:${imp.artifactId}:$artifactVersion"
-                logger.debug { "Resolving import $artifactIdStr" }
+                println("[IMPORT] Checking $artifactIdStr")
 
-                if (!seenArtifacts.add(artifactIdStr)) return@forEach
+                if (!seenArtifacts.add(artifactIdStr)) {
+                    println("  ↳ Skipping $artifactIdStr (already processed)")
+                    return@forEach
+                }
+
+                val localPom = localFileForArtifact(artifact)
+                println("  [DEBUG] Expected POM path in .m2 → $localPom")
+                if (localPom.exists()) {
+                    println("  [LOCAL] Found POM in .m2: $localPom")
+                } else {
+                    println("  [REMOTE] POM not in .m2, will fetch if needed…")
+                }
 
                 val descriptorRequest = ArtifactDescriptorRequest(artifact, repositories, null)
                 val descriptorResult = try {
                     system.readArtifactDescriptor(session, descriptorRequest)
                 } catch (e: ArtifactDescriptorException) {
-                    logger.warn { "Failed to read descriptor for $artifactIdStr: ${e.message}" }
+                    println("  [ERROR] Failed to read descriptor for $artifactIdStr → ${e.message}")
+                    e.printStackTrace()
                     return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, e).left()
                 }
+
                 descriptorResult.managedDependencies.forEach { dep ->
-                    val managedArtifact = dep.artifact
-                    imported[ZpmDependencyKt(managedArtifact.groupId, managedArtifact.artifactId, arrow.core.none())] =
-                        managedArtifact.version
+                    imported[ZpmDependencyKt(dep.artifact.groupId, dep.artifact.artifactId, arrow.core.none())] =
+                        dep.artifact.version
                 }
-                logger.debug { "Imported versions for $artifactIdStr: $imported" }
             } catch (e: Exception) {
+                println("[ERROR] Exception in import resolution: ${e.message}")
+                e.printStackTrace()
                 return ZpmResolutionErrorKt.DependencyResolutionError("${imp.groupId}:${imp.artifactId}", e).left()
             }
         }
 
-        // Step 2: Resolve dependencies (JARs or POMs if JAR unavailable)
+        // Step 2: Resolve dependencies
         val collectRequest = CollectRequest()
         dependencies.forEach { dep ->
-            val version = dep.version.getOrElse { imported[ZpmDependencyKt(dep.groupId, dep.artifactId, arrow.core.none())] ?: "develop-SNAPSHOT" }
+            val version = dep.version.getOrElse {
+                imported[ZpmDependencyKt(dep.groupId, dep.artifactId, arrow.core.none())] ?: "develop-SNAPSHOT"
+            }
+            println("[DEP] Adding dependency ${dep.groupId}:${dep.artifactId}:$version")
             val artifact = DefaultArtifact(dep.groupId, dep.artifactId, "jar", version)
             collectRequest.addDependency(Dependency(artifact, JavaScopes.COMPILE))
         }
         repositories.forEach { collectRequest.addRepository(it) }
 
-        val dependencyRequest = DependencyRequest(collectRequest, null)
         val dependencyResult = try {
-            system.resolveDependencies(session, dependencyRequest)
+            system.resolveDependencies(session, DependencyRequest(collectRequest, null))
         } catch (e: Exception) {
-            logger.error(e) { "Failed to resolve dependencies" }
+            println("[ERROR] Dependency resolution failed: ${e.message}")
+            e.printStackTrace()
             return ZpmResolutionErrorKt.DependencyResolutionError("dependencies", e).left()
         }
 
-        // Step 3: Process dependency nodes
+        // Step 3: Process artifacts
         val nlg = NodeListGenerator()
         dependencyResult.root.accept(PreorderDependencyNodeConsumerVisitor(nlg))
-        val nodesWithDependencies = nlg.getNodesWithDependencies()
-
-        nodesWithDependencies.forEach { node ->
+        nlg.getNodesWithDependencies().forEach { node ->
             val dep = node.dependency ?: return@forEach
             val artifact = dep.artifact
             val artifactIdStr = "${artifact.groupId}:${artifact.artifactId}:${artifact.version}"
-            if (!seenArtifacts.add(artifactIdStr)) return@forEach
-
-            val id = ZpmArtifactIdKt.parse(artifactIdStr)
-            val dependencies = node.children.mapNotNull { child ->
-                child.dependency?.artifact?.let {
-                    ZpmArtifactIdKt.parse("${it.groupId}:${it.artifactId}:${it.version}")
-                }
-            }.toSet()
-
-            // Cache artifact file (JAR or POM)
-            val artifactPath = try {
-                val artifactResult = system.resolveArtifact(session, ArtifactRequest(artifact, repositories, null))
-                artifactResult.artifact.file?.toPath()?.let { file ->
-                    cacheArtifactFile(file, artifactIdStr) ?: file
-                }
-            } catch (e: ArtifactResolutionException) {
-                val pomPath = localCacheDir.resolve("${artifact.groupId.replace('.', '/')}/${artifact.artifactId}/${artifact.version}/${artifact.artifactId}-${artifact.version}.pom")
-                logger.debug { "No JAR for $artifactIdStr, attempting POM: $pomPath" }
-                val pomArtifact = DefaultArtifact(artifact.groupId, artifact.artifactId, "pom", artifact.version)
-                try {
-                    val pomResult = system.resolveArtifact(session, ArtifactRequest(pomArtifact, repositories, null))
-                    pomResult.artifact.file?.toPath()?.let { file ->
-                        cacheArtifactFile(file, artifactIdStr) ?: file
-                    } ?: pomPath
-                } catch (e: ArtifactResolutionException) {
-                    logger.warn { "POM file not found for $artifactIdStr at $pomPath: ${e.message}" }
-                    return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, Exception("POM file missing")).left()
-                }
-            } ?: run {
-                logger.warn { "No file resolved for $artifactIdStr" }
-                return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, Exception("Artifact file missing")).left()
+            if (!seenArtifacts.add(artifactIdStr)) {
+                println("  ↳ Skipping $artifactIdStr (already processed)")
+                return@forEach
             }
 
-            artifacts.add(ZpmArtifactKt(id, artifactPath, dependencies))
-            logger.debug { "Added artifact $artifactIdStr: path=$artifactPath, dependencies=$dependencies" }
+            println("[RESOLVE] Trying $artifactIdStr")
+            val artifactPath = resolveArtifactFromZpmOrM2(artifact)
+            if (artifactPath != null) {
+                println("  [OK] Resolved $artifactIdStr → $artifactPath")
+                val id = ZpmArtifactIdKt.parse(artifactIdStr)
+                val deps = node.children.mapNotNull { child ->
+                    child.dependency?.artifact?.let {
+                        ZpmArtifactIdKt.parse("${it.groupId}:${it.artifactId}:${it.version}")
+                    }
+                }.toSet()
+                artifacts.add(ZpmArtifactKt(id, artifactPath, deps))
+            } else {
+                println("  [FAIL] Could not resolve $artifactIdStr")
+                return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, Exception("Artifact missing")).left()
+            }
         }
 
-        logger.debug { "[DONE] Resolved artifacts: ${artifacts.map { it.id }}" }
+        println("=== [DONE] Resolved ${artifacts.size} artifacts ===")
         return artifacts.right()
+    }
+
+    /**
+     * Check .zpm first (modularized cache), then .m2, then remote.
+     */
+    private fun resolveArtifactFromZpmOrM2(artifact: org.eclipse.aether.artifact.Artifact): Path? {
+        val zpmPath = zpmFileForArtifact(artifact)
+        if (zpmPath.exists()) {
+            println("    [HIT] Found modular jar in .zpm: $zpmPath")
+            return zpmPath.toPath()
+        }
+
+        val localFile = localFileForArtifact(artifact)
+        if (localFile.exists()) {
+            println("    [HIT] Found raw jar in .m2: $localFile")
+            return cacheArtifactFile(localFile.toPath(), "${artifact.groupId}:${artifact.artifactId}:${artifact.version}")
+        }
+
+        println("    [MISS] Not in .zpm or .m2, fetching from remote…")
+        return try {
+            val artifactResult = system.resolveArtifact(session, ArtifactRequest(artifact, repositories, null))
+            artifactResult.artifact.file?.toPath()?.let {
+                cacheArtifactFile(it, "${artifact.groupId}:${artifact.artifactId}:${artifact.version}")
+            }
+        } catch (e: ArtifactResolutionException) {
+            println("    [FAIL] Could not fetch artifact → ${e.message}")
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun localFileForArtifact(artifact: org.eclipse.aether.artifact.Artifact): File {
+        val lrm = session.localRepositoryManager
+        return lrm.repository.basedir
+            .toPath()
+            .resolve(lrm.getPathForLocalArtifact(artifact))
+            .toFile()
+    }
+
+    private fun zpmFileForArtifact(artifact: org.eclipse.aether.artifact.Artifact): File {
+        return zpmCacheDir
+            .resolve(artifact.groupId.replace('.', '/'))
+            .resolve(artifact.artifactId)
+            .resolve(artifact.version)
+            .resolve("${artifact.artifactId}-${artifact.version}.${artifact.extension}")
+            .toFile()
     }
 
     private fun cacheArtifactFile(artifactFile: Path, gav: String): Path? {
         val parts = gav.split(":")
-        require(parts.size == 3) { "Invalid GAV: $gav" }
         val (groupId, artifactId, version) = parts
-
         val targetPath = zpmCacheDir
             .resolve(groupId.replace('.', '/'))
             .resolve(artifactId)
@@ -159,47 +203,30 @@ open class ZpmCacheKt(
             .resolve(artifactFile.fileName)
 
         try {
-            java.nio.file.Files.createDirectories(targetPath.parent)
-            if (!java.nio.file.Files.exists(targetPath) || java.nio.file.Files.size(artifactFile) != java.nio.file.Files.size(targetPath)) {
-                java.nio.file.Files.copy(artifactFile, targetPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                logger.debug { "[CACHE] Cached $gav → $targetPath" }
-            } else {
-                logger.debug { "[CACHE] Skipped caching $gav (already present)" }
-            }
+            Files.createDirectories(targetPath.parent)
+            Files.copy(artifactFile, targetPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            println("    [CACHE] Stored modularized $gav → $targetPath")
             return targetPath
         } catch (e: Exception) {
-            logger.warn { "Failed to cache $gav to $targetPath: ${e.message}" }
+            println("    [CACHE-ERROR] Could not cache $gav → ${e.message}")
+            e.printStackTrace()
             return null
         }
     }
 
-    private class LoggingRepositoryListener : AbstractRepositoryListener() {
-        private val logger = KotlinLogging.logger {}
-        override fun artifactResolved(event: RepositoryEvent) {
-            logger.info { "[DOWNLOAD] ${event.artifact} from ${event.repository?.id}" }
-        }
-        override fun artifactDescriptorMissing(event: RepositoryEvent) {
-            logger.warn { "Missing artifact descriptor for ${event.artifact}" }
-        }
-        override fun artifactResolving(event: RepositoryEvent) {
-            logger.debug { "Resolving artifact ${event.artifact}" }
-        }
-    }
-
     private class LoggingTransferListener : AbstractTransferListener() {
-        private val logger = KotlinLogging.logger {}
         private val formatter = DecimalFormat("0.0")
         override fun transferStarted(event: TransferEvent) {
-            logger.info { "[TRANSFER-START] ${event.resource.resourceName}" }
+            println("[TRANSFER-START] ${event.resource.resourceName}")
         }
         override fun transferProgressed(event: TransferEvent) {
             val res: TransferResource = event.resource
             val kb = event.dataLength / 1024.0
             val totalKb = res.contentLength / 1024.0
-            logger.info { "[PROGRESS] ${res.resourceName} - ${formatter.format(kb)}/${formatter.format(totalKb)} KB" }
+            println("[PROGRESS] ${res.resourceName} - ${formatter.format(kb)}/${formatter.format(totalKb)} KB")
         }
         override fun transferSucceeded(event: TransferEvent) {
-            logger.info { "[TRANSFER-DONE] ${event.resource.resourceName}" }
+            println("[TRANSFER-DONE] ${event.resource.resourceName}")
         }
     }
 }

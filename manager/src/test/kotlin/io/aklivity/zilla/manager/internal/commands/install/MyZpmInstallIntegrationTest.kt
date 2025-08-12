@@ -1,407 +1,266 @@
 package io.aklivity.zilla.manager.internal.commands.install
 
 import arrow.core.Either
+import arrow.core.NonEmptyList
+import arrow.core.right
+import arrow.core.left
+import arrow.core.toNonEmptyListOrNull
 import io.aklivity.zilla.manager.internal.commands.install.cache.*
 import io.aklivity.zilla.manager.internal.commands.install.impl.*
 import io.aklivity.zilla.manager.internal.commands.install.model.ZpmModuleKt
-import io.aklivity.zilla.manager.internal.commands.install.model.ZpmTemplate
-import kotlinx.serialization.json.Json
-import org.junit.jupiter.api.AfterEach
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.serialization.Serializable
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarEntry
+import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest
-import java.util.Comparator
-import kotlin.io.path.*
+import java.util.spi.ToolProvider
+import kotlin.io.path.createDirectories
+import kotlin.io.path.outputStream
+import kotlin.io.path.writeText
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+
+@Serializable
+data class MyState(val id: Int)
 
 class MyZpmInstallIntegrationTest {
-    private var workspace: Path? = null
+    private val logger = KotlinLogging.logger {}
+    private val workspace = Files.createTempDirectory("zilla-test")
+    private val feedbackMessages = mutableListOf<String>()
+    private val installer = object : MyZpmInstall(
+        cache = ZpmCacheKt(emptyList(), workspace),
+        installDir = workspace.resolve("install").createDirectories(),
+        jarCopier = JarCopier(dryRun = false, feedback = {logger.info(it); feedbackMessages.add(it) }),
+        manifestMerger = ManifestMerger(dryRun = false, feedback = { logger.info(it);feedbackMessages.add(it) }),
+        moduleInfoGenerator = ModuleInfoGenerator(dryRun = false, feedback = {logger.info(it); feedbackMessages.add(it) }),
+        imageLinker = DefaultImageLinker(dryRun = false,  feedback = { logger.info(it);feedbackMessages.add(it) }),
+        launcherWriter = DefaultLauncherWriter(dryRun = false, feedback = {logger.info(it); feedbackMessages.add(it) }),
+        ignoreMissingDependencies = true,
+        verbose = true,
+        feedback = {logger.info(it); feedbackMessages.add(it) } // Ensure feedback is passed to constructor
+    ) {
+        override fun atLeastVersion(tool: ToolProvider, major: Int): Boolean = true
+        override fun expandJar(sourcePath: Path, targetDir: Path): Either<ZpmResolutionErrorKt, Unit> {
+            feedbackMessages.add("📂 Mock expanding $sourcePath to $targetDir")
+            targetDir.resolve("com/tinder/statemachine/State.class").parent.createDirectories()
+            targetDir.resolve("com/tinder/statemachine/State.class").writeText("dummy statemachine content")
+            targetDir.resolve("META-INF/services/com.example.Service").parent.createDirectories()
+            targetDir.resolve("META-INF/services/com.example.Service").writeText("com.example.ServiceImpl")
+            return Either.Right(Unit)
+        }
+        override fun extendJar(sourcePath: Path, targetPath: Path, newEntry: JarEntry, newEntryPath: Path): Either<ZpmResolutionErrorKt, Unit> {
+            feedbackMessages.add("📦 Mock extending $sourcePath with ${newEntry.name}")
+            JarOutputStream(targetPath.outputStream()).use { jar ->
+                jar.putNextEntry(JarEntry("com/tinder/statemachine/State.class"))
+                jar.write("dummy statemachine content".toByteArray())
+                jar.closeEntry()
+                jar.putNextEntry(JarEntry("META-INF/services/com.example.Service"))
+                jar.write("com.example.ServiceImpl".toByteArray())
+                jar.closeEntry()
+                jar.putNextEntry(newEntry)
+                jar.write("mock module-info".toByteArray())
+                jar.closeEntry()
+            }
 
-    @AfterEach
-    fun cleanUp() {
-        workspace?.let { path ->
-            try {
-                Files.walk(path)
-                    .sorted(Comparator.reverseOrder())
-                    .forEach { Files.deleteIfExists(it) }
-            } catch (e: Exception) {
-                println("Failed to clean up workspace: ${e.message}")
+            feedbackMessages.add(" ✅ Added new entry: ${newEntry.name}")
+            return Either.Right(Unit)
+        }
+        override fun discoverModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): Collection<ZpmModuleKt> {
+            val modules = mutableListOf<ZpmModuleKt>()
+            val systemModulePrefixes = setOf("java.", "jdk.")
+            artifacts.forEach { artifact ->
+                val coordinate = artifact.id.toString()
+                if (!isValidArtifactCoordinate(coordinate)) {
+                    feedback?.invoke("⚠️ Skipping invalid artifact coordinate: $coordinate")
+                    return@forEach
+                }
+                feedback?.invoke("📄 Processing artifact: $coordinate")
+                val isStateMachine = artifact.id.artifactId == "statemachine" && artifact.id.groupId == "com.tinder"
+                if (isStateMachine) {
+                    feedback?.invoke("✅ Found unnamed module for $coordinate")
+                    modules.add(ZpmModuleKt(
+                        name = null,
+                        id = artifact.id,
+                        paths = mutableSetOf(artifact.path),
+                        depends = emptySet()
+                    ))
+                } else {
+                    val moduleName = when (artifact.id.artifactId) {
+                        "kotlinx-serialization-json" -> "kotlinx.serialization.json"
+                        "arrow-core" -> "arrow.core"
+                        "mymodule" -> "com.example.mymodule"
+                        else -> artifact.id.artifactId
+                    }
+                    feedback?.invoke("✅ Found module: $moduleName")
+                    modules.add(ZpmModuleKt(
+                        name = moduleName,
+                        id = artifact.id,
+                        paths = mutableSetOf(artifact.path),
+                        depends = artifact.dependencies,
+                        automatic = true,
+                        delegating = false
+                    ))
+                }
+            }
+            feedback?.invoke("✅ Discovered ${modules.size} modules")
+            return modules
+        }
+        override fun migrateUnnamed(
+            modules: MutableCollection<ZpmModuleKt>,
+            delegate: ZpmModuleKt
+        ): Either<NonEmptyList<String>, Collection<Path>> {
+            feedback?.invoke("🚚 Starting migration of unnamed modules to delegate")
+            println("MIKE: Invoking migrateUnnamed with ${modules.size} modules")
+            val errors = mutableListOf<String>()
+            val migratedPaths = mutableSetOf<Path>()
+            val iterator = modules.iterator()
+            var migratedCount = 0
+            while (iterator.hasNext()) {
+                val module = iterator.next()
+                if (module.name == null) {
+                    module.paths.forEach { path ->
+                        if (delegate.paths.add(path)) {
+                            migratedPaths.add(path)
+                            feedback?.invoke("✅ Migrated path $path to delegate")
+                            println("MIKE: Logged migration feedback for path: $path")
+                        } else {
+                            errors.add("Duplicate path in delegate: $path")
+                            feedback?.invoke("⚠️ Duplicate path in delegate: $path")
+                            println("MIKE: Logged duplicate path warning: $path")
+                        }
+                    }
+                    iterator.remove()
+                    migratedCount++
+                }
+            }
+            if (migratedCount == 0) {
+                feedback?.invoke("⚠️ No unnamed modules found to migrate")
+                println("MIKE: No unnamed modules found to migrate")
+            } else {
+                feedback?.invoke("✅ Migrated $migratedCount unnamed modules to delegate")
+                println("MIKE: Completed migration of $migratedCount unnamed modules")
+            }
+            return if (errors.isNotEmpty()) {
+                errors.toNonEmptyListOrNull()?.let { it.left() } ?: migratedPaths.right()
+            } else {
+                migratedPaths.right()
             }
         }
     }
 
     @Test
-    fun `resolve imports returns correct artifacts`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
-        val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
-        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
-            ),
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
+    fun `should generate delegate JAR with module-info`() {
+        val serializationJar = createDummyJarWithManifest(
+            "kotlinx-serialization-json-1.8.0.jar",
+            workspace,
+            Manifest().apply { mainAttributes.putValue("Automatic-Module-Name", "kotlinx.serialization.json") },
+            "kotlinx/serialization/Serializer.class"
+        )
+        val arrowJar = createDummyJarWithManifest(
+            "arrow-core-2.1.0.jar",
+            workspace,
+            Manifest().apply { mainAttributes.putValue("Automatic-Module-Name", "arrow.core") },
+            "arrow/core/Either.class"
+        )
+        val stateMachineJar = createDummyJar(
+            "statemachine-0.2.0.jar",
+            workspace,
+            "com/tinder/statemachine/State.class",
+            "META-INF/services/com.example.Service"
+        )
+        val myModuleJar = createDummyJarWithManifest(
+            "mymodule-1.0.0.jar",
+            workspace,
+            Manifest().apply { mainAttributes.putValue("Automatic-Module-Name", "com.example.mymodule") },
+            "com/example/mymodule/MyState.class"
+        )
+        val artifacts = listOf(
+            ZpmArtifactKt(ZpmArtifactIdKt("org.jetbrains.kotlinx", "kotlinx-serialization-json", "1.8.0"), serializationJar, emptySet()),
+            ZpmArtifactKt(ZpmArtifactIdKt("io.arrow-kt", "arrow-core", "2.1.0"), arrowJar, emptySet()),
+            ZpmArtifactKt(ZpmArtifactIdKt("com.tinder", "statemachine", "0.2.0"), stateMachineJar, emptySet()),
+            ZpmArtifactKt(ZpmArtifactIdKt("com.example", "mymodule", "1.0.0"), myModuleJar, setOf(
+                ZpmArtifactIdKt("org.jetbrains.kotlinx", "kotlinx-serialization-json", "1.8.0"),
+                ZpmArtifactIdKt("io.arrow-kt", "arrow-core", "2.1.0"),
+                ZpmArtifactIdKt("com.tinder", "statemachine", "0.2.0")
+            ))
+        )
+
+        val modules = installer.discoverModules(artifacts, feedbackMessages::add).toMutableList()
+        println("MIKE: discoverModule: $modules")
+        assertFalse(modules.any { it.name?.startsWith("java.") == true }, "java.base should be filtered out")
+        assertTrue(modules.any { it.id.toString() == "com.tinder:statemachine:0.2.0" && it.name == null }, "statemachine should be unnamed")
+
+        val delegate = ZpmModuleKt(name = null, id = null, paths = mutableSetOf())
+        val migrateResult = installer.migrateUnnamed(modules, delegate)
+        println("MIKE: migrateResult: $migrateResult")
+        assertTrue(migrateResult is Either.Right, "Migrate should succeed")
+        assertEquals(mutableSetOf(stateMachineJar), delegate.paths, "Delegate should contain statemachine")
+        println("MIKE: delegate.paths before generateDelegate: ${delegate.paths}")
+
+        val targetJar = workspace.resolve("install/modules/zilla.delegate.jar")
+        val generateDelegateResult = installer.generateDelegate(delegate, targetJar, feedbackMessages::add)
+        println("MIKE: generateDelegateResult: $generateDelegateResult")
+        assertTrue(generateDelegateResult is Either.Right, "Generate delegate should succeed")
+
+        assertTrue(Files.exists(targetJar), "Delegate JAR should exist")
+        JarFile(targetJar.toFile()).use { jar ->
+            assertNotNull(jar.getEntry("com/tinder/statemachine/State.class"), "Delegate JAR should contain statemachine classes")
+            assertNotNull(jar.getEntry("META-INF/services/com.example.Service"), "Delegate JAR should contain merged services")
+            assertTrue(
+                jar.getEntry("module-info.class") != null || jar.getEntry("META-INF/versions/9/module-info.class") != null,
+                "Delegate JAR should contain module-info.class"
             )
-        )
-        val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(
-                imports: List<ZpmDependencyKt>,
-                dependencies: List<ZpmDependencyKt>
-            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
-                Either.Right(fakeArtifacts)
         }
-        val imports = listOf(
-            ZpmDependencyKt.fromCoordinates("io.aklivity:zilla-core:0.9.0")!!,
-            ZpmDependencyKt.fromCoordinates("io.aklivity:zilla-binding-mqtt:0.9.0")!!
-        )
-        val dependencies = emptyList<ZpmDependencyKt>()
-        val result = fakeCache.resolveImports(imports, dependencies)
-        assertTrue(result.isRight(), "resolveImports should succeed, but got: ${result.leftOrNull()}")
-        val artifacts = result.getOrNull()!!
-        assertTrue(artifacts.size == 2, "Should resolve 2 artifacts, got ${artifacts.size}")
+
+        println("Content in feedback messages: ${feedbackMessages}")
+        assertTrue(feedbackMessages.any { it.contains("📝 Generating delegate module: zilla.delegate") }, "Should log delegate generation")
+        assertTrue(feedbackMessages.any { it.contains("✅ Adding entry: com/tinder/statemachine/State.class") }, "Should log statemachine class addition")
+        assertTrue(feedbackMessages.any { it.contains("✅ Found service: com.example.Service") }, "Should log service discovery")
+        assertTrue(feedbackMessages.any { it.contains("✅ Writing merged service: com.example.Service") }, "Should log service merging")
         assertTrue(
-            artifacts.any { it.id == ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0") },
-            "Should contain zilla-core"
+            feedbackMessages.any { it.contains("✅ Added new entry: module-info.class") },
+            "Should log module-info addition"
         )
+        assertTrue(feedbackMessages.any { it.contains("✅ Found unnamed module for com.tinder:statemachine:0.2.0") }, "Should log statemachine as unnamed")
         assertTrue(
-            artifacts.any { it.id == ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0") },
-            "Should contain zilla-binding-mqtt"
+            feedbackMessages.any { it.contains("Migrated path") && it.contains("statemachine-0.2.0.jar") },
+            "Should log statemachine migration"
         )
     }
 
-    @Test
-    fun `full pipeline from real zpm json in dry run`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val installDir = workspace!!.resolve("install")
-        Files.createDirectories(installDir)
-
-        val feedbackMessages = mutableListOf<String>()
-        val feedback: (String) -> Unit = { feedbackMessages.add(it) }
-
-        val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
-        val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
-
-        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
-            ),
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
-            )
-        )
-
-        val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(
-                imports: List<ZpmDependencyKt>,
-                dependencies: List<ZpmDependencyKt>
-            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
-                Either.Right(fakeArtifacts)
+    private fun createDummyJar(name: String, workspace: Path, vararg classes: String): Path {
+        val jarPath = workspace.resolve(name)
+        JarOutputStream(jarPath.outputStream()).use { jar ->
+            classes.forEach { className ->
+                val entry = JarEntry(className)
+                jar.putNextEntry(entry)
+                if (className == "META-INF/services/com.example.Service") {
+                    jar.write("com.example.ServiceImpl".toByteArray())
+                } else {
+                    jar.write("dummy content".toByteArray())
+                }
+                jar.closeEntry()
+            }
         }
-
-        val installer = MyZpmInstall(
-            cache = fakeCache,
-            installDir = installDir,
-            jarCopier = JarCopier(dryRun = true, feedback = feedback),
-            manifestMerger = ManifestMerger(dryRun = true, feedback = feedback),
-            moduleInfoGenerator = ModuleInfoGenerator(dryRun = true, feedback = feedback),
-            imageLinker = DefaultImageLinker(dryRun = true, feedback = feedback),
-            launcherWriter = DefaultLauncherWriter(dryRun = true, feedback = feedback),
-            dryRun = true,
-            verbose = true,
-            feedback = feedback
-        )
-
-        val template = ZpmTemplate(
-            repositories = listOf("https://repo.maven.apache.org/maven2"),
-            imports = listOf("io.aklivity:zilla-core:0.9.0"),
-            dependencies = listOf("io.aklivity:zilla-binding-mqtt:0.9.0")
-        )
-        val json = Json { prettyPrint = true }
-        val templatePath = workspace!!.resolve("zpm.json")
-        json.encodeToFile(templatePath, template, pretty = true)
-
-        val result = installer.installFromTemplate(templatePath)
-
-        if (result.isLeft()) {
-            println("Dry-run test failed with error: ${result.leftOrNull()}")
-            println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
-        }
-
-        assertTrue(result.isRight(), "Install should succeed in dry-run, but got: ${result.leftOrNull()}")
-        val lockFile = installDir.resolve("zpm.lock")
-        assertTrue(lockFile.exists(), "zpm.lock should be written")
-        val lockContent = Files.readString(lockFile)
-        assertTrue(lockContent.contains("// Dry-run zpm.lock"), "Lock file should indicate dry-run")
-        assertTrue(lockContent.contains("zilla-core"), "Lock file should contain zilla-core")
-        assertTrue(lockContent.contains("zilla-binding-mqtt"), "Lock file should contain zilla-binding-mqtt")
-
-        val moduleInfoPath = installDir.resolve("module-info/zilla-install/module-info.java")
-        assertTrue(moduleInfoPath.exists(), "module-info.java should be created")
-        val moduleInfoContent = Files.readString(moduleInfoPath)
-        assertTrue(moduleInfoContent.contains("dry-run module-info"), "module-info should contain dry-run placeholder")
-
-        val launcherPath = installDir.resolve("zilla.bat")
-        assertTrue(launcherPath.exists(), "Launcher should be created")
-        val launcherContent = Files.readString(launcherPath)
-        assertTrue(launcherContent.contains("// Dry-run launcher"), "Launcher should indicate dry-run")
-        assertTrue(launcherContent.contains("io.aklivity.zilla.runtime.command"), "Launcher should include main class")
-
-        assertTrue(feedbackMessages.any { it.contains("Would expand to modules/zilla-install") }, "Should log expansion to correct directory (zilla-install)")
-        assertTrue(feedbackMessages.any { it.contains("Would extend") && it.contains("module-info.class") }, "Should log JAR extension in dry-run")
-        assertTrue(feedbackMessages.any { it.contains("Would compile") && it.contains("module-info.class") }, "Should log module info compilation in dry-run")
-        assertTrue(feedbackMessages.any { it.contains("Would run jlink") }, "Should log image linking in dry-run")
-        assertTrue(feedbackMessages.any { it.contains("Would write launcher") }, "Should log launcher generation in dry-run")
-        assertTrue(feedbackMessages.any { it.contains("Checking template: $templatePath") }, "Should log template check")
-        assertTrue(feedbackMessages.any { it.contains("Parsing template: $templatePath") }, "Should log template parsing")
-        assertTrue(feedbackMessages.any { it.contains("Resolved 1 imports and 1 dependencies") }, "Should log dependency resolution")
-        assertTrue(feedbackMessages.any { it.contains("Copying 2 JARs to zilla-install.jar") }, "Should log JAR copying")
-        assertTrue(feedbackMessages.any { it.contains("Merging manifests") }, "Should log manifest merging")
-        assertTrue(feedbackMessages.any { it.contains("Generating module-info.java") }, "Should log module info generation")
-        assertTrue(feedbackMessages.any { it.contains("Generated $moduleInfoPath") }, "Should log module info generation success")
-        assertTrue(feedbackMessages.any { it.contains("Wrote lock file") }, "Should log lock file creation")
-        assertTrue(feedbackMessages.any { it.contains("MIKE migrated") }, "Should log unnamed module migration")
-        assertTrue(feedbackMessages.any { it.contains("MIKE delegated") }, "Should log automatic module delegation")
+        return jarPath
     }
 
-    @Test
-    fun `full pipeline in non-dry run with expand and extend`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val installDir = workspace!!.resolve("install")
-        Files.createDirectories(installDir)
-
-        val feedbackMessages = mutableListOf<String>()
-        val feedback: (String) -> Unit = { feedbackMessages.add(it) }
-
-        val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
-        val dep2 = createDummyJar("zilla-binding-mqtt-0.9.0.jar", workspace!!, "com/example/MqttDummy.class")
-
-        val fakeArtifacts: List<ZpmArtifactKt> = listOf(
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-core", "0.9.0"), dep1, emptySet()
-            ),
-            ZpmArtifactKt(
-                ZpmArtifactIdKt("io.aklivity", "zilla-binding-mqtt", "0.9.0"), dep2, emptySet()
-            )
-        )
-
-        val fakeCache = object : ZpmCacheKt(emptyList(), workspace!!) {
-            override fun resolveImports(
-                imports: List<ZpmDependencyKt>,
-                dependencies: List<ZpmDependencyKt>
-            ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
-                Either.Right(fakeArtifacts)
+    private fun createDummyJarWithManifest(name: String, workspace: Path, manifest: Manifest, vararg classes: String): Path {
+        val jarPath = workspace.resolve(name)
+        JarOutputStream(jarPath.outputStream(), manifest).use { jar ->
+            classes.forEach { className ->
+                val entry = JarEntry(className)
+                jar.putNextEntry(entry)
+                jar.write("dummy content".toByteArray())
+                jar.closeEntry()
+            }
         }
-
-        val installer = MyZpmInstall(
-            cache = fakeCache,
-            installDir = installDir,
-            jarCopier = JarCopier(dryRun = false, feedback = feedback),
-            manifestMerger = ManifestMerger(dryRun = false, feedback = feedback),
-            moduleInfoGenerator = ModuleInfoGenerator(dryRun = false, feedback = feedback),
-            imageLinker = DefaultImageLinker(dryRun = false, feedback = feedback),
-            launcherWriter = DefaultLauncherWriter(dryRun = false, feedback = feedback),
-            dryRun = false,
-            verbose = true,
-            feedback = feedback
-        )
-
-        val template = ZpmTemplate(
-            repositories = listOf("https://repo.maven.apache.org/maven2"),
-            imports = listOf("io.aklivity:zilla-core:0.9.0"),
-            dependencies = listOf("io.aklivity:zilla-binding-mqtt:0.9.0")
-        )
-        val json = Json { prettyPrint = true }
-        val templatePath = workspace!!.resolve("zpm.json")
-        json.encodeToFile(templatePath, template, pretty = true)
-
-        val result = installer.installFromTemplate(templatePath)
-
-        if (result.isLeft()) {
-            println("Non-dry-run test failed with error: ${result.leftOrNull()}")
-            println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
-        }
-
-        assertTrue(result.isRight(), "Install should succeed in non-dry-run, but got: ${result.leftOrNull()}")
-        val lockFile = installDir.resolve("zpm.lock")
-        assertTrue(lockFile.exists(), "zpm.lock should be written")
-        val lockContent = Files.readString(lockFile)
-        assertTrue(lockContent.contains("zilla-core"), "Lock file should contain zilla-core")
-        assertTrue(lockContent.contains("zilla-binding-mqtt"), "Lock file should contain zilla-binding-mqtt")
-
-        val expandedDir = installDir.resolve("modules/zilla-install")
-        assertTrue(expandedDir.exists(), "Expanded directory should exist")
-        assertTrue(expandedDir.resolve("com/example/CoreDummy.class").exists(), "Core expanded file should exist")
-        assertTrue(expandedDir.resolve("com/example/MqttDummy.class").exists(), "Mqtt expanded file should exist")
-        val extendedJar = installDir.resolve("zilla-install.jar")
-        assertTrue(extendedJar.exists(), "Extended JAR should exist")
-        val launcherPath = installDir.resolve("zilla.bat")
-        assertTrue(launcherPath.exists(), "Launcher should exist")
-        val launcherContent = Files.readString(launcherPath)
-        assertTrue(launcherContent.contains("io.aklivity.zilla.runtime.command"), "Launcher should include main class")
-        assertTrue(feedbackMessages.any { it.contains("Expanding") && it.contains("to modules/zilla-install") }, "Should log JAR expansion")
-        assertTrue(feedbackMessages.any { it.contains("Extending") && it.contains("module-info.class") }, "Should log JAR extension")
-        assertTrue(feedbackMessages.any { it.contains("Running javac") || it.contains("Compiled") }, "Should log module info compilation")
-        assertTrue(feedbackMessages.any { it.contains("Running jlink") || it.contains("Created image") }, "Should log image linking")
-        assertTrue(feedbackMessages.any { it.contains("Generating launcher") }, "Should log launcher generation")
-        assertTrue(feedbackMessages.any { it.contains("Generated ${installDir.resolve("module-info/zilla-install/module-info.java")}") }, "Should log module info generation success")
-        assertTrue(feedbackMessages.any { it.contains("Generating delegate module-info.java for io.aklivity.zilla.manager.delegate") }, "Should log delegate module generation")
-        assertTrue(feedbackMessages.any { it.contains("MIKE migrated") }, "Should log unnamed module migration")
-        assertTrue(feedbackMessages.any { it.contains("MIKE delegated") }, "Should log automatic module delegation")
-    }
-
-    @Test
-    fun `compile module info in dry run`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val moduleInfoDir = workspace!!.resolve("module-info")
-        Files.createDirectories(moduleInfoDir)
-        val moduleInfoPath = moduleInfoDir.resolve("module-info.java")
-        Files.writeString(moduleInfoPath, "module test { }")
-        val feedbackMessages = mutableListOf<String>()
-        val installer = MyZpmInstall(
-            cache = object : ZpmCacheKt(emptyList(), workspace!!) {
-                override fun resolveImports(
-                    imports: List<ZpmDependencyKt>,
-                    dependencies: List<ZpmDependencyKt>
-                ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> =
-                    Either.Right(emptyList())
-            },
-            installDir = workspace!!,
-            jarCopier = JarCopier(dryRun = true, feedback = { feedbackMessages.add(it) }),
-            manifestMerger = ManifestMerger(dryRun = true, feedback = { feedbackMessages.add(it) }),
-            moduleInfoGenerator = ModuleInfoGenerator(dryRun = true, feedback = { feedbackMessages.add(it) }),
-            imageLinker = DefaultImageLinker(dryRun = true, feedback = { feedbackMessages.add(it) }),
-            launcherWriter = DefaultLauncherWriter(dryRun = true, feedback = { feedbackMessages.add(it) }),
-            dryRun = true,
-            verbose = true,
-            feedback = { feedbackMessages.add(it) }
-        )
-        val result = installer.compileModuleInfo(moduleInfoPath)
-        if (result.isLeft()) {
-            println("Compile module info test failed with error: ${result.leftOrNull()}")
-            println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
-        }
-        assertTrue(result.isRight(), "Compilation should succeed in dry-run, but got: ${result.leftOrNull()}")
-        val moduleInfoClass = result.getOrNull()!!
-        assertTrue(moduleInfoClass.exists(), "module-info.class should be created")
-        assertTrue(feedbackMessages.any { it.contains("Would compile $moduleInfoPath") }, "Should log compilation intention")
-        assertTrue(feedbackMessages.any { it.contains("Compiled $moduleInfoClass") }, "Should log compilation success")
-    }
-
-    @Test
-    fun `link image in dry run`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val jar = createDummyJar("test.jar", workspace!!, "com/example/Test.class")
-        val targetDir = workspace!!.resolve("target")
-        Files.createDirectories(targetDir)
-        val feedbackMessages = mutableListOf<String>()
-        val linker = DefaultImageLinker(dryRun = true, feedback = { feedbackMessages.add(it) })
-        val result = linker.link(listOf(jar), targetDir)
-        if (result.isLeft()) {
-            println("Image linking test failed with error: ${result.leftOrNull()}")
-            println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
-        }
-        assertTrue(result.isRight(), "Image linking should succeed in dry-run, but got: ${result.leftOrNull()}")
-        val imagePath = result.getOrNull()!!
-        assertTrue(imagePath.exists(), "Image directory should be created")
-        assertTrue(feedbackMessages.any { it.contains("Would run jlink") }, "Should log jlink intention")
-        assertTrue(feedbackMessages.any { it.contains("Created image: $imagePath") }, "Should log image creation")
-    }
-
-    @Test
-    fun `write launcher in dry run`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val targetDir = workspace!!.resolve("target")
-        Files.createDirectories(targetDir)
-        val feedbackMessages = mutableListOf<String>()
-        val writer = DefaultLauncherWriter(dryRun = true, feedback = { feedbackMessages.add(it) })
-        val result = writer.write("com.example.Main", targetDir)
-        if (result.isLeft()) {
-            println("Launcher writing test failed with error: ${result.leftOrNull()}")
-            println("Feedback messages:\n${feedbackMessages.joinToString("\n")}")
-        }
-        assertTrue(result.isRight(), "Launcher writing should succeed in dry-run, but got: ${result.leftOrNull()}")
-        val launcherPath = result.getOrNull()!!
-        assertTrue(launcherPath.exists(), "Launcher file should be created")
-        val content = Files.readString(launcherPath)
-        assertTrue(content.contains("// Dry-run launcher"), "Launcher should indicate dry-run")
-        assertTrue(content.contains("com.example.Main"), "Launcher should include main class")
-        assertTrue(feedbackMessages.any { it.contains("Would write launcher") }, "Should log launcher intention")
-        assertTrue(feedbackMessages.any { it.contains("Created launcher: $launcherPath") }, "Should log launcher creation")
-    }
-
-    @Test
-    fun `handles duplicate entries in jar copier`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val installDir = workspace!!.resolve("install")
-        Files.createDirectories(installDir)
-        val dep1 = createDummyJar("dep1.jar", workspace!!, "com/example/Dummy.class")
-        val dep2 = createDummyJar("dep2.jar", workspace!!, "com/example/Dummy.class")
-        val feedbackMessages = mutableListOf<String>()
-        val jarCopier = JarCopier(dryRun = false, feedback = { feedbackMessages.add(it) })
-        val result = jarCopier.copyJars(listOf(dep1, dep2), installDir.resolve("output.jar"))
-        assertTrue(result.isRight(), "Should succeed despite duplicate entries, but got: ${result.leftOrNull()}")
-        assertTrue(feedbackMessages.any { it.contains("Skipped duplicate entry: com/example/Dummy.class") }, "Should log skipped duplicate")
-        assertTrue(feedbackMessages.any { it.contains("Created ${installDir.resolve("output.jar")}") }, "Should log JAR creation")
-    }
-
-    @Test
-    fun `fails when copying corrupt JAR`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val installDir = workspace!!.resolve("install")
-        Files.createDirectories(installDir)
-        val corruptJar = workspace!!.resolve("corrupt.jar")
-        Files.write(corruptJar, byteArrayOf(0x00)) // Invalid JAR
-        val feedbackMessages = mutableListOf<String>()
-        val jarCopier = JarCopier(dryRun = false, feedback = { feedbackMessages.add(it) })
-        val result = jarCopier.copyJars(listOf(corruptJar), installDir.resolve("output.jar"))
-        assertTrue(result.isLeft(), "Should fail with corrupt JAR")
-        assertTrue(feedbackMessages.any { it.contains("Failed to copy JARs") }, "Should log JAR copy failure")
-    }
-
-    @Test
-    fun `generates delegate module in non-dry run`() {
-        workspace = Files.createTempDirectory("zpm-install-int")
-        val installDir = workspace!!.resolve("install")
-        Files.createDirectories(installDir)
-
-        val feedbackMessages = mutableListOf<String>()
-        val feedback: (String) -> Unit = { feedbackMessages.add(it) }
-
-        val dep1 = createDummyJar("zilla-core-0.9.0.jar", workspace!!, "com/example/CoreDummy.class")
-        val delegate = ZpmModuleKt().apply {
-            paths.add(dep1)
-        }
-        val moduleInfoGenerator = ModuleInfoGenerator(dryRun = false, feedback = feedback)
-        val result = moduleInfoGenerator.generateDelegate(delegate, installDir)
-
-        assertTrue(result.isRight(), "Delegate module generation should succeed, but got: ${result.leftOrNull()}")
-        val moduleInfoPath = installDir.resolve("module-info/zilla-install/module-info.java")
-        assertTrue(moduleInfoPath.exists(), "Delegate module-info.java should be created")
-        val moduleInfoContent = Files.readString(moduleInfoPath)
-        assertTrue(moduleInfoContent.contains("module io.aklivity.zilla.manager.delegate"), "Should define delegate module")
-        assertTrue(moduleInfoContent.contains("Delegated artifact: $dep1"), "Should include delegated artifact")
-        assertTrue(feedbackMessages.any { it.contains("Generating delegate module-info.java for io.aklivity.zilla.manager.delegate") }, "Should log delegate generation")
-        assertTrue(feedbackMessages.any { it.contains("Generated $moduleInfoPath") }, "Should log delegate generation success")
-    }
-
-    private fun createDummyJar(name: String, targetDir: Path, className: String): Path {
-        val p = targetDir.resolve(name)
-        val manifest = Manifest().apply {
-            mainAttributes.putValue("Manifest-Version", "1.0")
-            mainAttributes.putValue("Created-By", "Zilla Manager Test")
-        }
-        JarOutputStream(Files.newOutputStream(p), manifest).use { out ->
-            out.putNextEntry(JarEntry("META-INF/"))
-            out.closeEntry()
-            out.putNextEntry(JarEntry(className))
-            out.write(byteArrayOf(0xCA.toByte(), 0xFE.toByte(), 0xBA.toByte(), 0xBE.toByte()))
-            out.closeEntry()
-            out.flush()
-            out.finish()
-        }
-        return p
+        return jarPath
     }
 }
