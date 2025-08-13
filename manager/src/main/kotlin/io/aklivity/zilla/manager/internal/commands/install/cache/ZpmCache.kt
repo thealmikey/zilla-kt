@@ -15,8 +15,10 @@ import org.eclipse.aether.transfer.AbstractTransferListener
 import org.eclipse.aether.transfer.TransferEvent
 import org.eclipse.aether.transfer.TransferResource
 import org.eclipse.aether.util.artifact.JavaScopes
+import org.eclipse.aether.util.graph.traverser.FatArtifactTraverser
 import org.eclipse.aether.util.graph.visitor.NodeListGenerator
 import org.eclipse.aether.util.graph.visitor.PreorderDependencyNodeConsumerVisitor
+import org.eclipse.aether.util.repository.SimpleArtifactDescriptorPolicy
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -36,9 +38,36 @@ open class ZpmCacheKt(
         ZpmRepositoryConfigKt.newRepositorySystemSessionBuilder(system, localCacheDir)
             .setTransferListener(LoggingTransferListener())
             .setSystemProperties(System.getProperties())
-            .let { baseSession ->
+            .setSystemProperties(
+                System.getProperties().apply {
+                    this["maven.wagon.http.ssl.insecure"] = "true"
+                    this["maven.wagon.http.ssl.allowall"] = "true"
+                    this["maven.wagon.http.ssl.ignore.validity.dates"] = "true"
+                    this["maven.artifact.skipSignatures"] = "true"
+                    this["maven.artifact.threads"] = "4"
+                    this["maven.dependency.ignore"] = "true"
+                    this["maven.parallel"] = "true"
+                }
+            )
+            .setDependencySelector(
+                org.eclipse.aether.util.graph.selector.AndDependencySelector(
+                    org.eclipse.aether.util.graph.selector.ScopeDependencySelector("test", "provided"),
+                    org.eclipse.aether.util.graph.selector.OptionalDependencySelector(),
+                    org.eclipse.aether.util.graph.selector.ExclusionDependencySelector()
+                )
+            )
+            // Optionally add other defaults if needed (e.g., if not set in ZpmRepositoryConfigKt)
+            .setDependencyManager(org.eclipse.aether.util.graph.manager.ClassicDependencyManager())
+            .let{ baseSession ->
                 object : RepositorySystemSession by baseSession {
                     // Force offline to ensure local repo usage only (optional, comment out if fetching remotes)
+                    override fun getArtifactDescriptorPolicy(): ArtifactDescriptorPolicy {
+                        // ignore missing/invalid POMs
+                        return SimpleArtifactDescriptorPolicy(
+                            true,
+                             true
+                        )
+                    }
                     override fun isOffline(): Boolean = false
                     override fun getLocalRepository(): LocalRepository = LocalRepository(localCacheDir.toFile())
                 }
