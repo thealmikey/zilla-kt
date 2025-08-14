@@ -2,20 +2,21 @@ package io.aklivity.zilla.manager.internal.commands.install
 
 import arrow.core.Either
 import arrow.core.NonEmptyList
+import arrow.core.None
+import arrow.core.Some
 import arrow.core.flatMap
+import arrow.core.flatten
 import arrow.core.getOrElse
 import arrow.core.left
 import arrow.core.right
 import arrow.core.toNonEmptyListOrNull
 import io.aklivity.zilla.manager.internal.commands.install.cache.*
 import io.aklivity.zilla.manager.internal.commands.install.impl.*
-import io.aklivity.zilla.manager.internal.commands.install.model.ZpmModuleKt
 import io.aklivity.zilla.manager.internal.commands.install.model.ZpmTemplate
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.PrintStream
 import java.lang.module.ModuleDescriptor
@@ -27,8 +28,6 @@ import java.util.jar.JarOutputStream
 import java.util.zip.ZipFile
 import java.util.spi.ToolProvider
 import kotlin.io.path.*
-import kotlin.time.Duration.Companion.milliseconds
-
 
 open class MyZpmInstall(
     private val cache: ZpmCacheKt,
@@ -47,13 +46,13 @@ open class MyZpmInstall(
     private val json = Json { ignoreUnknownKeys = true }
     private val modulesDir: Path = installDir.resolve("modules")
 
-    open public fun ZpmError.toResolutionError(): ZpmResolutionErrorKt =
+    open fun ZpmError.toResolutionError(): ZpmResolutionErrorKt =
         ZpmResolutionErrorKt.DependencyResolutionError(this.toString())
 
-    open public fun Path.nameWithoutExtension(): String =
+    open fun Path.nameWithoutExtension(): String =
         fileName.toString().substringBeforeLast(".")
 
-    open public fun moduleDescriptor(jarPath: Path): ModuleDescriptor? = Either.catch {
+    open fun moduleDescriptor(jarPath: Path): ModuleDescriptor? = Either.catch {
         ModuleFinder.of(jarPath).findAll().firstOrNull()?.descriptor()
     }.getOrElse {
         feedback?.invoke("⚠️ Failed to load module descriptor for $jarPath: ${it.message}")
@@ -66,17 +65,18 @@ open class MyZpmInstall(
             .flatMap { template -> resolveDependencies(template, feedback) }
             .flatMap { artifacts ->
                 discoverAndMigrateModules(artifacts, feedback).flatMap { delegate ->
-                    generateSystemOnlyAutomatic(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies, false, true) }, feedback)
-                        .flatMap { processModules(delegate, artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies, false, true) }, feedback) }
-                        .flatMap { targetJar -> generateDelegating(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies, true, true) }, feedback).map { targetJar } }
+                    generateSystemOnlyAutomatic(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies.map { dep -> ZpmDependencyKt(dep.groupId, dep.artifactId, if (dep.version.isNotBlank()) Some(
+                        dep.version
+                    ) else None) }.toMutableSet(), false, true) }, feedback)
+                        .flatMap { processModules(delegate, artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies.map { dep -> ZpmDependencyKt(dep.groupId, dep.artifactId, if (dep.version.isNotBlank()) Some(dep.version) else None) }.toMutableSet(), false, true) }, feedback) }
+                        .flatMap { targetJar -> generateDelegating(artifacts.map { ZpmModuleKt(it.id.toString(), it.id, mutableSetOf(it.path), it.dependencies.map { dep -> ZpmDependencyKt(dep.groupId, dep.artifactId, if (dep.version.isNotBlank()) Some(dep.version) else None) }.toMutableSet(), true, true) }, feedback).map { targetJar } }
                 }
             }
             .flatMap { targetJar -> generateAndCompileModuleInfo(targetJar, feedback) }
             .flatMap { targetJar -> linkImageAndWriteLauncher(targetJar, feedback) }
     }
 
-    // Step 6: Generate and compile module-info
-    public open fun generateAndCompileModuleInfo(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> {
+    open fun generateAndCompileModuleInfo(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> {
         feedback?.invoke("📝 Merging manifests")
         val manifestPath = installDir.resolve("META-INF/MANIFEST.MF")
         return manifestMerger.merge(mutableListOf(), manifestPath).mapLeft {
@@ -109,10 +109,7 @@ open class MyZpmInstall(
         }
     }
 
-
-
-
-    open public fun parseTemplate(templatePath: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmTemplate> {
+    open fun parseTemplate(templatePath: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmTemplate> {
         feedback?.invoke("📜 Parsing template: $templatePath")
         return Either.catch {
             json.decodeFromString<ZpmTemplate>(Files.readString(templatePath))
@@ -122,7 +119,7 @@ open class MyZpmInstall(
         }
     }
 
-    open public fun resolveDependencies(template: ZpmTemplate, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
+    open fun resolveDependencies(template: ZpmTemplate, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
         feedback?.invoke("🔍 Converting ${template.imports.size} imports and ${template.dependencies.size} dependencies")
         val imports = template.imports.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
         val deps = template.dependencies.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
@@ -135,8 +132,8 @@ open class MyZpmInstall(
         }
     }
 
-    open public fun discoverAndMigrateModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmModuleKt> {
-        val delegate = ZpmModuleKt(name = null, id = null, paths = mutableSetOf())
+    open fun discoverAndMigrateModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, ZpmModuleKt> {
+        val delegate = ZpmModuleKt()
         val modules = discoverModules(artifacts, feedback).toMutableList()
         feedback?.invoke("MIKE discovered ${modules.size} modules")
 
@@ -152,15 +149,23 @@ open class MyZpmInstall(
         }
     }
 
-    open public fun processModules(
+    open fun processModules(
         delegate: ZpmModuleKt,
         modules: Collection<ZpmModuleKt>,
         feedback: ((String) -> Unit)?
     ): Either<ZpmResolutionErrorKt, Path> {
         feedback?.invoke("📦 Processing modules")
+        // Ensure modulesDir exists
+        Files.createDirectories(modulesDir)
+        feedback?.invoke("✅ Created modules directory: $modulesDir")
+
         val nonDelegating = modules.filterNot { it.delegating }
         nonDelegating.forEach { module ->
             val artifactPath = module.paths.first()
+            if (!Files.exists(artifactPath) || !Files.isReadable(artifactPath)) {
+                feedback?.invoke("❌ Invalid artifact path for ${module.name}: $artifactPath")
+                return ZpmResolutionErrorKt.DependencyResolutionError("Invalid artifact path for ${module.name}: $artifactPath").left()
+            }
             val modulePath = modulesDir.resolve("${module.name}.jar")
             Files.copy(artifactPath, modulePath, StandardCopyOption.REPLACE_EXISTING)
             feedback?.invoke("✅ Copied non-delegating module: ${module.name}")
@@ -171,17 +176,27 @@ open class MyZpmInstall(
             return modulesDir.right()
         }
 
+        // Validate delegate paths
+        val invalidPaths = delegate.paths.filter { !Files.exists(it) || !Files.isReadable(it) }
+        if (invalidPaths.isNotEmpty()) {
+            feedback?.invoke("❌ Invalid delegate paths: ${invalidPaths.joinToString()}")
+            return ZpmResolutionErrorKt.DependencyResolutionError("Invalid delegate paths: ${invalidPaths.joinToString()}").left()
+        }
+
         val targetJar = modulesDir.resolve("zilla.delegate.jar")
         feedback?.invoke("📦 Generating delegate JAR: $targetJar")
         return jarCopier.copyJars(delegate.paths.toList(), targetJar)
+            .flatMap {
+                println("Mike, about to generate delegate")
+                generateDelegate(delegate, targetJar, feedback).flatMap {
+                    println("Mike, we generated the delegate")
+                    feedback?.invoke("✅ Generated delegate JAR: $targetJar")
+                    Either.Right(targetJar)
+                }
+            }
             .mapLeft {
                 feedback?.invoke("❌ Failed to copy delegate JARs: $it")
                 ZpmResolutionErrorKt.DependencyResolutionError("Failed to copy delegate JARs: $it")
-            }.flatMap {
-                generateDelegate(delegate, targetJar, feedback).flatMap {
-                    feedback?.invoke("✅ Generated delegate JAR: $targetJar")
-                    targetJar.right()
-                }
             }
     }
 
@@ -196,8 +211,22 @@ open class MyZpmInstall(
             throw IOException("No paths to process in delegate module")
         }
         feedback?.invoke("📂 Processing ${delegate.paths.size} JARs: ${delegate.paths.joinToString()}")
+
+        // Validate delegate.paths
+        val invalidPaths = delegate.paths.filter { !Files.exists(it) || !Files.isReadable(it) }
+        if (invalidPaths.isNotEmpty()) {
+            feedback?.invoke("❌ Invalid delegate paths: ${invalidPaths.joinToString()}")
+            throw IOException("Invalid delegate paths: ${invalidPaths.joinToString()}")
+        }
+
         val generatedModulesDir = installDir.resolve("generated/modules").createDirectories()
         val generatedDelegateDir = generatedModulesDir.resolve(delegate.name ?: "zilla.delegate").createDirectories()
+
+        // Ensure write permissions
+        if (!Files.isWritable(generatedModulesDir) || !Files.isWritable(generatedDelegateDir)) {
+            feedback?.invoke("❌ No write permissions for $generatedModulesDir or $generatedDelegateDir")
+            throw IOException("No write permissions for $generatedModulesDir or $generatedDelegateDir")
+        }
 
         // Merge services and filter entries
         val services = mutableMapOf<String, MutableList<String>>()
@@ -234,7 +263,7 @@ open class MyZpmInstall(
                                 .addAll(serviceImpl.split("\n").filter { it.isNotBlank() })
                         } else if (entryNames.add(entry.name)) {
                             feedback?.invoke("✅ Adding entry: ${entry.name}")
-                            jar.putNextEntry(entry)
+                            jar.putNextEntry(JarEntry(entry.name))
                             if (!entry.isDirectory) {
                                 artifactJar.getInputStream(entry).use { jar.write(it.readAllBytes()) }
                             }
@@ -256,51 +285,109 @@ open class MyZpmInstall(
         }
         feedback?.invoke("✅ Created zilla.delegate.jar: $targetJar")
 
-        // Verify targetJar exists before running jdeps
+        // Verify targetJar exists and contains valid classes
         if (!Files.exists(targetJar)) {
             feedback?.invoke("❌ zilla.delegate.jar was not created: $targetJar")
             throw IOException("zilla.delegate.jar was not created: $targetJar")
+        }
+        var hasClasses = false
+        JarFile(targetJar.toFile()).use { jar ->
+            hasClasses = jar.entries().asSequence().any { it.name.endsWith(".class") && it.name != "module-info.class" }
+        }
+        if (!hasClasses) {
+            feedback?.invoke("❌ zilla.delegate.jar contains no valid class files")
+            throw IOException("zilla.delegate.jar contains no valid class files")
         }
 
         // Generate module-info.java
         feedback?.invoke("🛠 Running jdeps to generate module-info.java")
         val jdeps = ToolProvider.findFirst("jdeps").orElseThrow { IllegalStateException("jdeps not found") }
-        val jdepsArgs = mutableListOf("--generate-module-info", generatedModulesDir.toString(), targetJar.toString())
+        val javaVersion = System.getProperty("java.version")
+        feedback?.invoke("📜 Using JDK version: $javaVersion")
+        val jdepsArgs = mutableListOf(
+            "--generate-module-info", generatedDelegateDir.toString(),
+            "--module", delegate.name ?: "io.aklivity.zilla.manager.delegate",
+            "--module-path", modulesDir.toString(),
+            targetJar.toString()
+        )
         if (ignoreMissingDependencies) jdepsArgs.add(0, "--ignore-missing-deps")
         feedback?.invoke("📜 jdeps command: ${jdepsArgs.joinToString(" ")}")
         val jdepsOut = ByteArrayOutputStream()
         val jdepsErr = ByteArrayOutputStream()
-        val jdepsExitCode = jdeps.run(PrintStream(jdepsOut), PrintStream(jdepsErr), *jdepsArgs.toTypedArray())
-        if (jdepsExitCode != 0) {
+        // Clear generated directory recursively
+        Files.walk(generatedModulesDir).sorted(Comparator.reverseOrder()).skip(1).forEach { path ->
+            try {
+                Files.deleteIfExists(path)
+            } catch (e: DirectoryNotEmptyException) {
+                Files.walk(path).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            }
+        }
+        feedback?.invoke("✅ Cleared $generatedModulesDir for jdeps")
+        var jdepsExitCode = jdeps.run(PrintStream(jdepsOut, true, Charsets.UTF_8), PrintStream(jdepsErr, true, Charsets.UTF_8), *jdepsArgs.toTypedArray())
+        feedback?.invoke("✅ jdeps output: ${jdepsOut.toString(Charsets.UTF_8)}")
+        if (jdepsExitCode != 0 || jdepsErr.toString(Charsets.UTF_8).isNotBlank()) {
             feedback?.invoke("❌ jdeps failed with exit code $jdepsExitCode: ${jdepsErr.toString(Charsets.UTF_8)}")
             throw IOException("jdeps failed with exit code $jdepsExitCode: ${jdepsErr.toString(Charsets.UTF_8)}")
         }
-        feedback?.invoke("✅ jdeps output: ${jdepsOut.toString(Charsets.UTF_8)}")
 
-        val moduleInfo = generatedDelegateDir.resolve("module-info.java")
-        var retries = 5
-        var fileExists = false
-        while (retries > 0 && !fileExists) {
-            fileExists = Files.exists(moduleInfo)
-            if (!fileExists) {
-                feedback?.invoke("⚠️ module-info.java not found at $moduleInfo, retrying ($retries attempts left)")
-                logger.debug("module-info.java not found at $moduleInfo, retrying ($retries attempts left)")
-                Thread.sleep(100.milliseconds.inWholeMilliseconds)
+        // Check for module-info.java in generatedDelegateDir
+        val targetModuleInfo = generatedDelegateDir.resolve("module-info.java")
+        if (!Files.exists(targetModuleInfo)) {
+            // Retry jdeps if module-info.java is missing
+            var retries = 5
+            while (retries > 0 && !Files.exists(targetModuleInfo)) {
+                feedback?.invoke("⚠️ module-info.java not found at $targetModuleInfo, retrying jdeps")
+                logger.debug("module-info.java not found at $targetModuleInfo, retrying")
+                Files.walk(generatedModulesDir).sorted(Comparator.reverseOrder()).skip(1).forEach { path ->
+                    try {
+                        Files.deleteIfExists(path)
+                    } catch (e: DirectoryNotEmptyException) {
+                        Files.walk(path).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+                    }
+                }
+                jdepsExitCode = jdeps.run(PrintStream(jdepsOut, true, Charsets.UTF_8), PrintStream(jdepsErr, true, Charsets.UTF_8), *jdepsArgs.toTypedArray())
+                if (jdepsExitCode != 0 || jdepsErr.toString(Charsets.UTF_8).isNotBlank()) {
+                    feedback?.invoke("❌ jdeps retry failed with exit code $jdepsExitCode: ${jdepsErr.toString(Charsets.UTF_8)}")
+                    throw IOException("jdeps retry failed with exit code $jdepsExitCode: ${jdepsErr.toString(Charsets.UTF_8)}")
+                }
+                Thread.sleep(100)
                 retries--
             }
         }
-        if (!fileExists) {
-            feedback?.invoke("❌ module-info.java not found at $moduleInfo after retries")
-            logger.error("Failed to find module-info.java at $moduleInfo after retries")
-            throw IOException("Failed to generate module-info for delegate")
+        if (!Files.exists(targetModuleInfo)) {
+            // Check for module-info.java in unexpected subdirectories
+            val moduleInfo = Files.walk(generatedModulesDir)
+                .filter { it.fileName.toString() == "module-info.java" }
+                .findFirst()
+            if (moduleInfo.isPresent) {
+                feedback?.invoke("📜 Found module-info.java at ${moduleInfo.get()}, moving to $targetModuleInfo")
+                try {
+                    Files.move(moduleInfo.get(), targetModuleInfo, StandardCopyOption.REPLACE_EXISTING)
+                } catch (e: NoSuchFileException) {
+                    feedback?.invoke("❌ Failed to move module-info.java: ${e.message}")
+                    throw e
+                }
+            } else {
+                feedback?.invoke("❌ module-info.java not found in $generatedModulesDir after retries")
+                throw IOException("module-info.java not found in $generatedModulesDir")
+            }
         }
-        feedback?.invoke("✅ Generated module-info.java at $moduleInfo")
+        feedback?.invoke("✅ Generated module-info.java at $targetModuleInfo")
+
+        // Validate and patch module-info.java
+        var content = Files.readString(targetModuleInfo, Charsets.UTF_8)
+        feedback?.invoke("📜 module-info.java content:\n$content")
+        // Remove invalid requires clauses (e.g., com.ibm.icu)
+        content = content.replace(Regex("requires\\s+com\\.ibm\\.icu;"), "")
+        Files.writeString(targetModuleInfo, content)
+        feedback?.invoke("✅ Removed invalid requires clauses from module-info.java")
+
         // Patch with uses clauses
-        val content = moduleInfo.readText()
         val uses = Regex("provides\\s+([^\\s]+)\\s+with").findAll(content).map { "uses ${it.groupValues[1]};" }.toList()
         if (uses.isNotEmpty()) {
             feedback?.invoke("✅ Patching module-info.java with ${uses.size} uses clauses")
-            Files.writeString(moduleInfo, content.replace("}", "${uses.joinToString("\n")}\n}"))
+            content = content.replace("}", "${uses.joinToString("\n")}\n}")
+            Files.writeString(targetModuleInfo, content)
         } else {
             feedback?.invoke("⚠️ No provides clauses found to patch in module-info.java")
         }
@@ -311,13 +398,15 @@ open class MyZpmInstall(
         // Compile module-info.java
         feedback?.invoke("🛠 Compiling module-info.java")
         val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
+        // Include delegate.paths in module-path to resolve dependencies like com.ibm.icu
+        val modulePath = listOf(modulesDir.toString()) + delegate.paths.map { it.parent.toString() }.distinct().joinToString(File.pathSeparator)
         val javacArgs = mutableListOf<String>()
         if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
-        javacArgs.addAll(listOf("-d", generatedDelegateDir.toString(), moduleInfo.toString()))
+        javacArgs.addAll(listOf("--module-path", modulePath, "-d", generatedDelegateDir.toString(), targetModuleInfo.toString()))
         feedback?.invoke("📜 javac command: ${javacArgs.joinToString(" ")}")
         val javacOut = ByteArrayOutputStream()
         val javacErr = ByteArrayOutputStream()
-        val javacExitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *javacArgs.toTypedArray())
+        val javacExitCode = javac.run(PrintStream(javacOut, true, Charsets.UTF_8), PrintStream(javacErr, true, Charsets.UTF_8), *javacArgs.toTypedArray())
         if (javacExitCode != 0) {
             feedback?.invoke("❌ javac failed with exit code $javacExitCode: ${javacErr.toString(Charsets.UTF_8)}")
             throw IOException("javac failed with exit code $javacExitCode: ${javacErr.toString(Charsets.UTF_8)}")
@@ -339,50 +428,16 @@ open class MyZpmInstall(
 
         val finalJar = modulesDir.resolve("zilla.delegate.jar")
         val moduleInfoEntry = JarEntry(entryName).apply { time = 318240000000L }
-        feedback?.invoke("📦 Extending $targetJar to $finalJar with $entryName")
+        feedback?.invoke("📦 Extending $targetJar with $entryName")
         extendJar(targetJar, finalJar, moduleInfoEntry, realModuleInfo).getOrElse { throw it }
         feedback?.invoke("✅ Generated final delegate JAR: $finalJar")
     }.mapLeft {
+        it.printStackTrace()
         feedback?.invoke("❌ Failed to generate delegate: ${it.message}")
-        ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error")
+        ZpmResolutionErrorKt.DependencyResolutionError("Failed to generate delegate: ${it.message ?: "Unknown error"}")
     } as Either<ZpmResolutionErrorKt, Unit>
 
-    open public fun checkTemplate(templatePath: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Unit> {
-        feedback?.invoke("📂 Checking template: $templatePath")
-        return if (templatePath.exists()) {
-            Either.Right(Unit)
-        } else {
-            feedback?.invoke("❌ Template not found: $templatePath")
-            ZpmResolutionErrorKt.ArtifactNotFound(templatePath.toString()).left()
-        }
-    }
-
-
-
-
-    // Step 7: Link image and write launcher
-    public open fun linkImageAndWriteLauncher(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> {
-        feedback?.invoke("🔗 Linking runtime image")
-        return imageLinker.link(listOf(targetJar), installDir).mapLeft {
-            feedback?.invoke("❌ Failed to link image: ${it.toString()}")
-            ZpmResolutionErrorKt.DependencyResolutionError("Failed to link image: ${it.toString()}")
-        }.flatMap { imagePath ->
-            feedback?.invoke("✅ Linked runtime image: $imagePath")
-            feedback?.invoke("📝 Writing lock file")
-            val lockPath = writeLockFile(imagePath, emptyList()) // Adjust based on actual artifacts usage
-            feedback?.invoke("✅ Wrote lock file: $lockPath")
-            feedback?.invoke("📜 Generating launcher")
-            launcherWriter.write("io.aklivity.zilla.runtime.command", installDir).mapLeft {
-                feedback?.invoke("❌ Failed to write launcher: ${it.toString()}")
-                ZpmResolutionErrorKt.DependencyResolutionError("Failed to write launcher: ${it.toString()}")
-            }.map { launcherPath ->
-                feedback?.invoke("✅ Generated launcher: $launcherPath")
-                launcherPath
-            }
-        }
-    }
-
-    open public fun discoverModules(
+    private fun discoverModules(
         artifacts: List<ZpmArtifactKt>,
         feedback: ((String) -> Unit)?
     ): Collection<ZpmModuleKt> {
@@ -394,6 +449,7 @@ open class MyZpmInstall(
             val coordinate = artifact.id.toString()
             if (!isValidArtifactCoordinate(coordinate)) {
                 feedback?.invoke("⚠️ Skipping invalid artifact coordinate: $coordinate")
+                println("DEBUG: Skipping invalid artifact coordinate: $coordinate")
                 return@forEach
             }
 
@@ -403,45 +459,45 @@ open class MyZpmInstall(
 
             if (moduleRefs.isEmpty()) {
                 feedback?.invoke("✅ Found unnamed module for $coordinate")
-                modules.add(ZpmModuleKt(name = null, id = artifact.id, paths = mutableSetOf(artifact.path)))
+                println("DEBUG: Found unnamed module for $coordinate")
+                modules.add(ZpmModuleKt(artifact))
             } else {
                 moduleRefs.forEach { moduleRef ->
                     val descriptor = moduleRef.descriptor()
                     val moduleName = descriptor.name()
                     if (systemModulePrefixes.any { moduleName.startsWith(it) }) {
                         feedback?.invoke("⚠️ Skipping system module: $moduleName")
+                        println("DEBUG: Skipping system module: $moduleName")
                         return@forEach
                     }
                     feedback?.invoke("✅ Found module: $moduleName")
+                    println("DEBUG: Found module: $moduleName")
                     modules.add(ZpmModuleKt(
-                        name = moduleName,
-                        id = artifact.id,
-                        paths = mutableSetOf(artifact.path),
-                        depends = descriptor.requires().mapNotNull { req ->
-                            if (systemModulePrefixes.any { req.name().startsWith(it) }) null
-                            else ZpmArtifactIdKt.parse(req.name())
-                        }.toSet()
+                        descriptor,
+                        artifact
                     ))
                 }
             }
         }
 
         feedback?.invoke("✅ Discovered ${modules.size} modules")
+        println("DEBUG: Discovered ${modules.size} modules")
         return modules
     }
 
-    open public fun isValidArtifactCoordinate(coordinate: String): Boolean {
+    private fun isValidArtifactCoordinate(coordinate: String): Boolean {
         val parts = coordinate.split(":")
         val systemModulePrefixes = setOf("java.", "jdk.")
         return parts.size == 3 && parts.all { it.isNotBlank() } && !systemModulePrefixes.any { coordinate.startsWith(it) }
     }
 
-    open public fun migrateUnnamed(
+    private fun migrateUnnamed(
         modules: MutableCollection<ZpmModuleKt>,
         delegate: ZpmModuleKt
     ): Either<NonEmptyList<String>, Collection<Path>> {
         feedback?.invoke("🚚 Starting migration of unnamed modules to delegate")
         logger.debug("Invoking migrateUnnamed with ${modules.size} modules")
+        println("DEBUG: Invoking migrateUnnamed with ${modules.size} modules")
         val errors = mutableListOf<String>()
         val migratedPaths = mutableSetOf<Path>()
         val iterator = modules.iterator()
@@ -454,10 +510,12 @@ open class MyZpmInstall(
                         migratedPaths.add(path)
                         feedback?.invoke("✅ Migrated path $path to delegate")
                         logger.debug("Logged migration feedback for path: $path")
+                        println("DEBUG: Feedback invoked for path: $path")
                     } else {
                         errors.add("Duplicate path in delegate: $path")
                         feedback?.invoke("⚠️ Duplicate path in delegate: $path")
                         logger.debug("Logged duplicate path warning: $path")
+                        println("DEBUG: Duplicate path warning: $path")
                     }
                 }
                 iterator.remove()
@@ -467,9 +525,11 @@ open class MyZpmInstall(
         if (migratedCount == 0) {
             feedback?.invoke("⚠️ No unnamed modules found to migrate")
             logger.debug("No unnamed modules found to migrate")
+            println("DEBUG: No unnamed modules found to migrate")
         } else {
             feedback?.invoke("✅ Migrated $migratedCount unnamed modules to delegate")
             logger.debug("Completed migration of $migratedCount unnamed modules")
+            println("DEBUG: Completed migration of $migratedCount unnamed modules")
         }
         return if (errors.isNotEmpty()) {
             errors.toNonEmptyListOrNull()?.let { it.left() } ?: migratedPaths.right()
@@ -478,7 +538,7 @@ open class MyZpmInstall(
         }
     }
 
-    open public fun delegateAutomatic(
+    private fun delegateAutomatic(
         modules: Collection<ZpmModuleKt>,
         delegate: ZpmModuleKt
     ): Either<NonEmptyList<String>, Unit> {
@@ -513,7 +573,7 @@ open class MyZpmInstall(
         }
     }
 
-    open public fun delegateModule(
+    private fun delegateModule(
         delegate: ZpmModuleKt,
         module: ZpmModuleKt,
         lookup: (ZpmArtifactIdKt?) -> ZpmModuleKt?,
@@ -532,16 +592,17 @@ open class MyZpmInstall(
             }
             module.paths.clear()
             module.delegating = true
-            module.depends.forEach { dependId ->
-                lookup(dependId)?.let { depend ->
-                    delegateModule(delegate, depend, lookup, errors)
+            module.depends.forEach { depend ->
+                val dependId = ZpmArtifactIdKt(depend.groupId, depend.artifactId, depend.version.fold({ "LATEST" }, { it }))
+                lookup(dependId)?.let { resolvedDepend ->
+                    delegateModule(delegate, resolvedDepend, lookup, errors)
                     feedback?.invoke("✅ Processed dependency: $dependId")
                 } ?: feedback?.invoke("⚠️ Dependency not found: $dependId")
             }
         }
     }
 
-    open public fun expandJar(sourcePath: Path, targetDir: Path): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
+    private fun expandJar(sourcePath: Path, targetDir: Path): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
         feedback?.invoke("📂 Starting expansion of $sourcePath to $targetDir")
         if (!Files.exists(sourcePath) || Files.size(sourcePath) < 32) {
             feedback?.invoke("❌ Source JAR missing or too small: $sourcePath")
@@ -581,7 +642,7 @@ open class MyZpmInstall(
         ZpmResolutionErrorKt.DependencyResolutionError("Failed to expand $sourcePath: ${it.message}")
     }
 
-    open public fun extendJar(
+    open fun extendJar(
         sourcePath: Path,
         targetPath: Path,
         newEntry: JarEntry,
@@ -613,25 +674,21 @@ open class MyZpmInstall(
                 }
 
                 var retries = 5
-                var fileExists = false
+                var fileExists = Files.exists(newEntryPath)
                 while (retries > 0 && !fileExists) {
+                    feedback?.invoke("⚠️ New entry file not found at $newEntryPath, retrying")
+                    logger.debug("New entry file not found at $newEntryPath, retrying")
+                    Thread.sleep(100)
+                    retries--
                     fileExists = Files.exists(newEntryPath)
-                    if (!fileExists) {
-                        feedback?.invoke("⚠️ New entry file not found at $newEntryPath, retrying")
-                        logger.debug("New entry file not found at $newEntryPath, retrying")
-                        Thread.sleep(100.milliseconds.inWholeMilliseconds)
-                        retries--
-                    }
                 }
-                try {
-                    targetJar.putNextEntry(newEntry)
-                    targetJar.write(Files.readAllBytes(newEntryPath))
-                    targetJar.closeEntry()
+                if (!fileExists) {
+                    feedback?.invoke("❌ New entry file still not found at $newEntryPath after retries")
+                    throw IOException("New entry file not found at $newEntryPath")
                 }
-                catch (e: Exception){
-                    println("couldn't place other entry coz ${e.message}")
-                }
-
+                targetJar.putNextEntry(newEntry)
+                targetJar.write(Files.readAllBytes(newEntryPath))
+                targetJar.closeEntry()
                 feedback?.invoke("✅ Added new entry: ${newEntry.name}")
             }
         }
@@ -661,9 +718,11 @@ open class MyZpmInstall(
         }
         val args = arrayOf(moduleInfoPath.toString(), "-d", moduleInfoPath.parent.toString())
         feedback?.invoke("📜 Running javac ${args.joinToString(" ")}")
-        val exitCode = javac.run(System.out, System.err, *args)
+        val javacOut = ByteArrayOutputStream()
+        val javacErr = ByteArrayOutputStream()
+        val exitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *args)
         if (exitCode != 0) {
-            feedback?.invoke("❌ javac failed with exit code $exitCode")
+            feedback?.invoke("❌ javac failed with exit code $exitCode: ${javacErr.toString(Charsets.UTF_8)}")
             throw RuntimeException("javac failed with exit code $exitCode")
         }
         if (!Files.exists(moduleInfoClass)) {
@@ -677,7 +736,7 @@ open class MyZpmInstall(
         ZpmResolutionErrorKt.DependencyResolutionError("Failed to compile module-info: ${it.message}")
     }
 
-    open public fun writeLockFile(templatePath: Path, artifacts: List<ZpmArtifactKt>): Path {
+    open fun writeLockFile(templatePath: Path, artifacts: List<ZpmArtifactKt>): Path {
         val lockPath = installDir.resolve("zpm.lock")
         feedback?.invoke("📝 Preparing lock file with ${artifacts.size} artifacts")
         val lines = artifacts.map { "${it.id} -> ${it.path}" }
@@ -717,10 +776,14 @@ open class MyZpmInstall(
             jdepsArgs.add(generatedModulesDir.toString())
             jdepsArgs.add(artifactPath.toString())
 
-            val exitCode = jdeps.run(System.out, System.err, *jdepsArgs.toTypedArray())
+            val jdepsOut = ByteArrayOutputStream()
+            val jdepsErr = ByteArrayOutputStream()
+            val exitCode = jdeps.run(PrintStream(jdepsOut), PrintStream(jdepsErr), *jdepsArgs.toTypedArray())
             if (exitCode != 0 && !ignoreMissingDependencies) {
+                feedback?.invoke("❌ jdeps failed for ${module.name}: ${jdepsErr.toString(Charsets.UTF_8)}")
                 throw IOException("jdeps failed for ${module.name}")
             }
+            feedback?.invoke("✅ jdeps output: ${jdepsOut.toString(Charsets.UTF_8)}")
 
             val generatedModuleInfo = generatedModuleDir.resolve("module-info.java")
             if (!generatedModuleInfo.exists()) {
@@ -733,8 +796,14 @@ open class MyZpmInstall(
             if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
             javacArgs.addAll(listOf("-d", generatedModuleDir.toString(), generatedModuleInfo.toString()))
 
-            val javacExitCode = javac.run(System.out, System.err, *javacArgs.toTypedArray())
-            if (javacExitCode != 0) throw IOException("javac failed for ${module.name}")
+            val javacOut = ByteArrayOutputStream()
+            val javacErr = ByteArrayOutputStream()
+            val javacExitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *javacArgs.toTypedArray())
+            if (javacExitCode != 0) {
+                feedback?.invoke("❌ javac failed for ${module.name}: ${javacErr.toString(Charsets.UTF_8)}")
+                throw IOException("javac failed for ${module.name}")
+            }
+            feedback?.invoke("✅ javac output: ${javacOut.toString(Charsets.UTF_8)}")
 
             val moduleInfoClass = generatedModuleDir.resolve("module-info.class")
             val multiReleaseModuleInfo = generatedModuleDir.resolve("META-INF/versions/9/module-info.class")
@@ -754,23 +823,22 @@ open class MyZpmInstall(
         promotions.forEach { (module, newPath) ->
             val descriptor = moduleDescriptor(newPath) ?: throw IOException("Failed to load descriptor for ${module.name}")
             modules.plus(ZpmModuleKt(
-                name = descriptor.name(),
-                id = module.id,
-                paths = mutableSetOf(newPath),
-                depends = module.depends,
-                delegating = false,
-                automatic = false
+                descriptor = descriptor,
+                artifact = ZpmArtifactKt(module.id!!, newPath, setOf())
             ))
         }
-    }.mapLeft { ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error") }
+    }.mapLeft {
+        feedback?.invoke("❌ Failed to generate system-only automatic modules: ${it.message}")
+        ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error")
+    }
 
-    open public fun jarIsModular(jarPath: Path): Boolean = Either.catch {
+    open fun jarIsModular(jarPath: Path): Boolean = Either.catch {
         FileSystems.newFileSystem(jarPath, null as ClassLoader?).use { fs ->
             fs.getPath("/module-info.class").exists() || fs.getPath("/META-INF/versions/9/module-info.class").exists()
         }
     }.getOrElse { false }
 
-    open public fun atLeastVersion(tool: ToolProvider, major: Int): Boolean {
+    open fun atLeastVersion(tool: ToolProvider, major: Int): Boolean {
         val out = ByteArrayOutputStream()
         tool.run(PrintStream(out), System.err, "--version")
         val matcher = Regex("""(\d+)\.""").find(out.toString(Charsets.UTF_8))
@@ -795,16 +863,26 @@ open class MyZpmInstall(
             if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
             javacArgs.addAll(listOf("--module-path", modulesDir.toString(), "-d", generatedModuleDir.toString(), moduleInfo.toString()))
 
-            val exitCode = javac.run(System.out, System.err, *javacArgs.toTypedArray())
-            if (exitCode != 0) throw IOException("javac failed for ${module.name}")
+            val javacOut = ByteArrayOutputStream()
+            val javacErr = ByteArrayOutputStream()
+            val exitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *javacArgs.toTypedArray())
+            if (exitCode != 0) {
+                feedback?.invoke("❌ javac failed for ${module.name}: ${javacErr.toString(Charsets.UTF_8)}")
+                throw IOException("javac failed for ${module.name}")
+            }
+            feedback?.invoke("✅ javac output: ${javacOut.toString(Charsets.UTF_8)}")
 
             val moduleInfoClass = generatedModuleDir.resolve("module-info.class")
             val multiReleaseModuleInfo = generatedModuleDir.resolve("META-INF/versions/9/module-info.class")
             val (realModuleInfo, entryName) = when {
                 moduleInfoClass.exists() -> moduleInfoClass to "module-info.class"
                 multiReleaseModuleInfo.exists() -> multiReleaseModuleInfo to "META-INF/versions/9/module-info.class"
-                else -> throw IOException("module-info.class not found for ${module.name}")
+                else -> {
+                    feedback?.invoke("❌ module-info.class not found in $generatedModuleDir")
+                    throw IOException("module-info.class not found for ${module.name}")
+                }
             }
+            feedback?.invoke("✅ Found module-info.class at $realModuleInfo")
 
             val modulePath = modulesDir.resolve("${module.name}.jar")
             JarOutputStream(Files.newOutputStream(modulePath)).use { jar ->
@@ -815,5 +893,38 @@ open class MyZpmInstall(
             }
             feedback?.invoke("✅ Generated delegating module: ${module.name}")
         }
-    }.mapLeft { ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error") }
+    }.mapLeft {
+        feedback?.invoke("❌ Failed to generate delegating modules: ${it.message}")
+        ZpmResolutionErrorKt.DependencyResolutionError(it.message ?: "Unknown error")
+    }
+
+    private fun checkTemplate(templatePath: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Unit> = Either.catch {
+        if (!Files.exists(templatePath)) {
+            feedback?.invoke("❌ Template file not found: $templatePath")
+            throw IOException("Template file not found: $templatePath")
+        }
+        if (!Files.isReadable(templatePath)) {
+            feedback?.invoke("❌ Template file not readable: $templatePath")
+            throw IOException("Template file not readable: $templatePath")
+        }
+    }.mapLeft {
+        feedback?.invoke("❌ Failed to check template: ${it.message}")
+        ZpmResolutionErrorKt.DependencyResolutionError("Failed to check template: ${it.message}")
+    }.map { Unit }
+
+    private fun linkImageAndWriteLauncher(targetJar: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Path> = Either.catch {
+        feedback?.invoke("🔗 Linking image for $targetJar")
+        val imagePath = installDir.resolve("image")
+        imageLinker.link(targetJar, imagePath).getOrElse { throw it }
+        feedback?.invoke("✅ Linked image to $imagePath")
+
+        feedback?.invoke("📝 Writing launcher")
+        val launcherPath = installDir.resolve("zilla.bat")
+        launcherWriter.write(ZpmModuleKt.DELEGATE_NAME, installDir).getOrElse { throw it }
+        feedback?.invoke("✅ Wrote launcher to $launcherPath")
+        targetJar
+    }.mapLeft {
+        feedback?.invoke("❌ Failed to link image or write launcher: ${it.message}")
+        ZpmResolutionErrorKt.DependencyResolutionError("Failed to link image or write launcher: ${it.message}")
+    }
 }

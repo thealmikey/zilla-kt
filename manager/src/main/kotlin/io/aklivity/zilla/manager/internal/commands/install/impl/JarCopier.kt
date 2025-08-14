@@ -16,15 +16,33 @@ class JarCopier(
 ) {
     fun copyJars(jars: List<Path>, outputJar: Path): Either<JarCopyError, Path> {
         if (dryRun) {
-            feedback("Would copy ${jars.size} JARs to $outputJar")
-            feedback("Would expand to modules/zilla-install")
+            feedback("🧪 [dry-run] Would copy ${jars.size} JARs to $outputJar")
             return outputJar.right()
+        }
+
+        // Validate input JARs
+        val invalidJars = jars.filter { !Files.exists(it) || !Files.isReadable(it) }
+        if (invalidJars.isNotEmpty()) {
+            feedback("❌ Invalid JAR paths: ${invalidJars.joinToString()}")
+            return JarCopyError("Invalid JAR paths: ${invalidJars.joinToString()}").left()
+        }
+
+        // Validate each JAR has .class files
+        jars.forEach { jar ->
+            JarFile(jar.toFile()).use { jarFile ->
+                val hasClasses = jarFile.entries().asSequence().any { it.name.endsWith(".class") && !it.isDirectory }
+                if (!hasClasses) {
+                    feedback("❌ JAR contains no class files: $jar")
+                    return JarCopyError("JAR contains no class files: $jar").left()
+                }
+            }
         }
 
         val seenEntries = mutableSetOf<String>()
         return try {
             feedback("🛠 Copying ${jars.size} JARs to $outputJar")
-            feedback("🛠 Writing JAR to: $outputJar")
+            Files.createDirectories(outputJar.parent)
+            feedback("✅ Created parent directory: ${outputJar.parent}")
             JarOutputStream(Files.newOutputStream(outputJar)).use { out ->
                 jars.forEach { jar ->
                     JarFile(jar.toFile()).use { jarFile ->
@@ -44,8 +62,7 @@ class JarCopier(
                 }
             }
             feedback("✅ Created $outputJar")
-            feedback("🛠 Extracting entries from $outputJar to modules/zilla-install")
-            outputJar.right()
+            Either.Right(outputJar)
         } catch (e: Exception) {
             feedback("❌ Failed to copy JARs: ${e.message}")
             JarCopyError("Failed to copy JARs: ${e.message}").left()

@@ -3,7 +3,7 @@ package io.aklivity.zilla.manager.internal.commands.install.impl
 import arrow.core.Either
 import arrow.core.left
 import arrow.core.right
-import io.aklivity.zilla.manager.internal.commands.install.model.ZpmModuleKt
+import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmModuleKt
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarFile
@@ -30,7 +30,7 @@ class ModuleInfoGenerator(
             feedback?.let { it ("📦 Generating module-info.java for: $jarPath") }
             val moduleInfoContent = buildString {
                 appendLine("module zilla.install {")
-                if (delegate != null && delegate.paths.isNotEmpty()) {
+                if (delegate.paths.isNotEmpty()) {
                     appendLine("    requires ${delegate.name};")
                     delegate.paths.forEach { path ->
                         appendLine("    // Delegated artifact: $path")
