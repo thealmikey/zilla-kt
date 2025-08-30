@@ -3,6 +3,8 @@ package io.aklivity.zilla.manager.internal.commands.install.impl
 import arrow.core.Either
 import arrow.core.left
 import arrow.core.right
+import io.aklivity.zilla.manager.internal.utils.JarCopyMode
+import io.aklivity.zilla.manager.internal.utils.JarEntryFilter
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarEntry
@@ -47,6 +49,9 @@ class JarCopier(
                 jars.forEach { jar ->
                     JarFile(jar.toFile()).use { jarFile ->
                         jarFile.entries().asSequence().forEach { entry ->
+                            if (!JarEntryFilter.shouldCopy(entry.name, JarCopyMode.RAW_COPY)) {
+                                return@forEach
+                            }
                             if (!entry.isDirectory && entry.name != "META-INF/MANIFEST.MF") {
                                 if (seenEntries.add(entry.name)) {
                                     feedback("✅ Copied: ${entry.name}")

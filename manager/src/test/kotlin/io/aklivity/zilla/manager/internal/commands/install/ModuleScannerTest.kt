@@ -1,64 +1,103 @@
-package io.aklivity.zilla.manager.internal.commands.install
 
-import io.aklivity.zilla.manager.internal.commands.install.impl.DefaultModuleScanner
+package io.aklivity.zilla.manager.internal.commands.install.impl
+
+import arrow.core.Either
+import io.aklivity.zilla.manager.internal.commands.install.ModuleScanner
 import io.aklivity.zilla.manager.internal.commands.install.ZpmError
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.nio.file.*
-import kotlin.test.*
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.jar.JarOutputStream
 
-class ModuleScannerTest {
+class DefaultModuleScannerTest {
 
-    private val feedback = mutableListOf<String>()
+    private lateinit var scanner: ModuleScanner
+    private val feedbackMessages = mutableListOf<String>()
+
+    @BeforeEach
+    fun setUp() {
+        scanner = DefaultModuleScanner(
+            dryRun = false,
+            feedback = { msg -> feedbackMessages.add(msg) }
+        )
+    }
 
     @Test
-    fun `should find jar files in valid folder`() {
-        val tempDir = Files.createTempDirectory("zpm-scan").apply {
-            Files.createFile(resolve("a.jar"))
-            Files.createFile(resolve("b.txt"))
-            Files.createFile(resolve("c.jar"))
-        }
+    fun `should fail if path does not exist`() {
+        val nonExistentPath = Path.of("non-existent-dir")
+        val result = scanner.scan(nonExistentPath)
 
-        val scanner = DefaultModuleScanner(feedback = feedback::add)
+        assertTrue(result.isLeft())
+        assertTrue((result as Either.Left).value is ZpmError.ModuleScanFailed)
+        assertEquals("❌ Directory does not exist: $nonExistentPath", (result.value as ZpmError.ModuleScanFailed).cause.message)
+        assertTrue(feedbackMessages.contains("📂 Scanning path: $nonExistentPath"))
+        assertTrue(feedbackMessages.contains("❌ Directory does not exist: $nonExistentPath"))
+    }
+
+    @Test
+    fun `should fail if path is not a directory`(@TempDir tempDir: Path) {
+        val filePath = tempDir.resolve("not-a-dir.txt")
+        Files.createFile(filePath)
+        val result = scanner.scan(filePath)
+
+        assertTrue(result.isLeft())
+        assertTrue((result as Either.Left).value is ZpmError.ModuleScanFailed)
+        assertEquals("❌ Path is not a directory: $filePath", (result.value as ZpmError.ModuleScanFailed).cause.message)
+        assertTrue(feedbackMessages.contains("📂 Scanning path: $filePath"))
+        assertTrue(feedbackMessages.contains("❌ Path is not a directory: $filePath"))
+    }
+
+    @Test
+    fun `should return empty list for empty directory`(@TempDir tempDir: Path) {
         val result = scanner.scan(tempDir)
 
         assertTrue(result.isRight())
-        assertEquals(2, result.getOrNull()?.size)
-        assertTrue(feedback.any { it.contains("Found 2") })
+        assertEquals(emptyList<Path>(), (result as Either.Right).value)
+        assertTrue(feedbackMessages.contains("📂 Scanning path: $tempDir"))
+        assertTrue(feedbackMessages.contains("✅ Found 0 .jar file(s)"))
     }
 
     @Test
-    fun `should fail on non existent path`() {
-        val fake = Paths.get("/path/does/not/exist")
-        val scanner = DefaultModuleScanner(feedback = feedback::add)
-
-        val result = scanner.scan(fake)
-
-        assertTrue(result.isLeft())
-        val err = result.swap().getOrNull()
-        assertTrue(err is ZpmError.ModuleScanFailed)
-        assertTrue(feedback.any { it.contains("❌ Directory does not exist") })
-    }
-
-    @Test
-    fun `should fail when scanning file instead of directory`() {
-        val file = Files.createTempFile("zpm-file", ".tmp")
-        val scanner = DefaultModuleScanner(feedback = feedback::add)
-
-        val result = scanner.scan(file)
-
-        assertTrue(result.isLeft())
-        assertTrue(feedback.any { it.contains("not a directory") })
-    }
-
-    @Test
-    fun `should simulate scan in dry run mode`() {
-        val dir = Files.createTempDirectory("zpm-dry")
-        val scanner = DefaultModuleScanner(dryRun = true, feedback = feedback::add)
-
-        val result = scanner.scan(dir)
+    fun `should find JAR files in directory`(@TempDir tempDir: Path) {
+        val jar1 = createEmptyJar(tempDir.resolve("test1.jar"))
+        val jar2 = createEmptyJar(tempDir.resolve("test2.jar"))
+        Files.createFile(tempDir.resolve("not-a-jar.txt")) // Non-JAR file
+        val result = scanner.scan(tempDir)
 
         assertTrue(result.isRight())
-        assertEquals(0, result.getOrNull()?.size)
-        assertTrue(feedback.any { it.contains("[dry-run] Would scan") })
+        val jars = (result as Either.Right).value
+        assertEquals(2, jars.size)
+        assertTrue(jars.contains(jar1))
+        assertTrue(jars.contains(jar2))
+        assertTrue(feedbackMessages.contains("📂 Scanning path: $tempDir"))
+        assertTrue(feedbackMessages.contains("✅ Found 2 .jar file(s)"))
+    }
+
+    @Test
+    fun `should handle dry run`(@TempDir tempDir: Path) {
+        scanner = DefaultModuleScanner(dryRun = true, feedback = { msg -> feedbackMessages.add(msg) })
+        createEmptyJar(tempDir.resolve("test.jar"))
+        val result = scanner.scan(tempDir)
+
+        assertTrue(result.isRight())
+        assertEquals(emptyList<Path>(), (result as Either.Right).value)
+        assertTrue(feedbackMessages.contains("📂 Scanning path: $tempDir"))
+        assertTrue(feedbackMessages.contains("✅ [dry-run] Would scan: $tempDir and collect .jar files"))
+    }
+
+    @Test
+    fun `should handle no feedback`() {
+        scanner = DefaultModuleScanner(feedback = null)
+        val nonExistentPath = Path.of("non-existent-dir")
+        scanner.scan(nonExistentPath) // No exception, just no feedback
+    }
+
+    // Helper method to create an empty JAR
+    private fun createEmptyJar(path: Path): Path {
+        JarOutputStream(Files.newOutputStream(path)).use { /* empty */ }
+        return path
     }
 }

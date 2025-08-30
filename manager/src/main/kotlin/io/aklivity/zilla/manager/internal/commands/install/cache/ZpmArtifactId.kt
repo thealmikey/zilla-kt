@@ -3,7 +3,8 @@ package io.aklivity.zilla.manager.internal.commands.install.cache
 data class ZpmArtifactIdKt(
     val groupId: String,
     val artifactId: String,
-    val version: String
+    val version: String,
+    val moduleName: String? = null
 ) {
     companion object {
         fun parse(coordinate: String): ZpmArtifactIdKt {
@@ -16,4 +17,8 @@ data class ZpmArtifactIdKt(
     }
 
     override fun toString(): String = "$groupId:$artifactId:$version"
+
+    override fun equals(other: Any?): Boolean {
+        return other.toString() == this.toString()
+    }
 }

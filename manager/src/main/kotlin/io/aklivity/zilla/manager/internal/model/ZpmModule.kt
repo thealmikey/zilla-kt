@@ -1,54 +1,73 @@
 package io.aklivity.zilla.manager.internal.commands.install.cache
 
-import arrow.core.None
-import arrow.core.Some
 import java.nio.file.Path
 import java.lang.module.ModuleDescriptor
+import java.util.jar.JarFile
 
 data class ZpmModuleKt(
     val name: String? = DELEGATE_NAME,
     val id: ZpmArtifactIdKt? = DELEGATE_ID,
-    val paths: MutableSet<Path> =mutableSetOf<Path>(),
-    val depends: MutableSet<ZpmDependencyKt> = mutableSetOf<ZpmDependencyKt>(),
+    val paths: MutableSet<Path> = mutableSetOf(),
+    val depends: MutableSet<ZpmArtifactIdKt> = mutableSetOf(),
     val automatic: Boolean = false,
     var delegating: Boolean = false
 ) {
     companion object {
         const val DELEGATE_NAME = "io.aklivity.zilla.manager.delegate"
         val DELEGATE_ID: ZpmArtifactIdKt? = null
+
+        fun hasAnyModuleInfo(jarPath: Path): Boolean {
+            return try {
+                JarFile(jarPath.toFile()).use { jar ->
+                    jar.entries().asSequence().any { entry ->
+                        val name = entry.name
+                        !entry.isDirectory && (
+                                name == "module-info.class" ||
+                                        (name.startsWith("META-INF/versions/") && name.endsWith("module-info.class"))
+                                )
+                    }
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
+
+
+
+
+
 
     constructor(artifact: ZpmArtifactKt) : this(
         name = null,
         id = artifact.id,
         paths = mutableSetOf(artifact.path),
-        depends = artifact.dependencies.map { dep ->
-            ZpmDependencyKt(dep.groupId, dep.artifactId, if (dep.version.isNotBlank()) Some(dep.version) else None)
-        }.toMutableSet(),
+        depends = artifact.dependencies
+        .mapNotNull { req ->
+            if (setOf("java.", "jdk.").any { req.toString().startsWith(it) }) null
+            else req
+        }.toMutableSet(), // Unnamed modules have no JPMS dependencies
         automatic = false,
         delegating = true
     )
 
     constructor(descriptor: ModuleDescriptor, artifact: ZpmArtifactKt) : this(
         name = descriptor.name(),
-        id = artifact.id,
-        paths = LinkedHashSet(setOf(artifact.path)),
-        depends = descriptor.requires().mapNotNull { req ->
-            if (setOf("java.", "jdk.").any { req.name().startsWith(it) }) null
-            else ZpmDependencyKt.fromCoordinates(req.name().replace(".", ":"))
-        }.toMutableSet(),
-        automatic = descriptor.isAutomatic(),
+        id = artifact.id.copy(moduleName = descriptor.name()),
+        paths = mutableSetOf(artifact.path),
+        depends = artifact.dependencies
+            .mapNotNull { req ->
+                if (setOf("java.", "jdk.").any { req.toString().startsWith(it) }) null
+                else req
+            }.toMutableSet(),
+        automatic = if (hasAnyModuleInfo(artifact.path)) {
+            false // treat multi-release module-info as a real module
+        } else {
+            descriptor.isAutomatic()
+        },
         delegating = false
     )
 
-    constructor(module: ZpmModuleKt) : this(
-        name = module.name,
-        id = module.id,
-        paths = mutableSetOf<Path>() ,
-        depends =  mutableSetOf<ZpmDependencyKt>() ,
-        automatic = false,
-        delegating = false
-    )
 
     override fun hashCode(): Int {
         return setOf(name, automatic, paths, id, depends, delegating).hashCode()

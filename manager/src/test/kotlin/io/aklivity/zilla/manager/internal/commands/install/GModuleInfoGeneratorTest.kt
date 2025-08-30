@@ -43,6 +43,11 @@
 //            out.write("Manifest-Version: 1.0\n".toByteArray())
 //            out.closeEntry()
 //        }
+//        // Verify JAR contents
+//        JarFile(path.toFile()).use { jar ->
+//            val entryNames = jar.entries().asSequence().map { it.name }.toList()
+//            feedback("Created JAR $path with entries: $entryNames")
+//        }
 //        return path
 //    }
 //
@@ -58,12 +63,13 @@
 //        assertTrue(result.isRight(), "Expected Right, got $result")
 //        val moduleInfoPath = result.getOrNull()
 //        assertEquals(outputDir.resolve("module-info/zilla-install/module-info.java"), moduleInfoPath)
-//        assertTrue(moduleInfoPath!!.exists())
+//        assertTrue(moduleInfoPath!!.exists(), "Module info file should exist: $moduleInfoPath")
 //        val content = moduleInfoPath.readText()
-//        assertTrue(content.contains("module zilla.install"))
-//        assertTrue(content.contains("requires zilla.delegate"))
-//        assertTrue(content.contains("com/example/Test.class"))
-//        assertTrue(feedbackMessages.any { it.contains("Generated module-info.java") })
+//        feedback("Generated module-info.java content:\n$content")
+//        assertTrue(content.contains("module zilla.install"), "Expected 'module zilla.install' in content")
+//        assertTrue(content.contains("requires zilla.delegate"), "Expected 'requires zilla.delegate' in content")
+//        assertTrue(content.contains("com/example/Test.class"), "Expected 'com/example/Test.class' in content")
+//        assertTrue(feedbackMessages.any { it.contains("✅ Generated") }, "Expected feedback '✅ Generated' in messages: $feedbackMessages")
 //    }
 //
 //    @Test
@@ -74,7 +80,7 @@
 //
 //        val result = generator.generate(jarPath, outputDir, ZpmModuleKt())
 //
-//        assertTrue(result.isRight())
+//        assertTrue(result.isRight(), "Expected Right, got $result")
 //        val moduleInfoPath = result.getOrNull()
 //        assertTrue(moduleInfoPath!!.exists())
 //        assertTrue(moduleInfoPath.readText().contains("Dry-run module-info"))
@@ -89,7 +95,7 @@
 //
 //        val result = generator.generate(jarPath, outputDir, ZpmModuleKt())
 //
-//        assertTrue(result.isLeft())
+//        assertTrue(result.isLeft(), "Expected Left, got $result")
 //        assertTrue(feedbackMessages.any { it.contains("JAR $jarPath is invalid or unreadable") })
 //    }
 //
@@ -102,7 +108,7 @@
 //
 //        val result = generator.generate(jarPath, outputDir, ZpmModuleKt())
 //
-//        assertTrue(result.isLeft())
+//        assertTrue(result.isLeft(), "Expected Left, got $result")
 //        assertTrue(feedbackMessages.any { it.contains("Error generating module-info") })
 //    }
 //
@@ -114,14 +120,14 @@
 //
 //        val result = generator.generateDelegate(delegate, outputDir)
 //
-//        assertTrue(result.isRight())
+//        assertTrue(result.isRight(), "Expected Right, got $result")
 //        val moduleInfoPath = result.getOrNull()
 //        assertEquals(outputDir.resolve("module-info/zilla-install/module-info.java"), moduleInfoPath)
 //        assertTrue(moduleInfoPath!!.exists())
 //        val content = moduleInfoPath.readText()
 //        assertTrue(content.contains("module zilla.delegate"))
 //        assertTrue(content.contains("requires transitive zilla.delegate"))
-//        assertTrue(feedbackMessages.any { it.contains("Generating delegate module-info.java") })
+//        assertTrue(feedbackMessages.any { it.contains("✅ Generated") })
 //    }
 //
 //    @Test
@@ -132,7 +138,7 @@
 //
 //        val result = generator.generateDelegate(delegate, outputDir)
 //
-//        assertTrue(result.isRight())
+//        assertTrue(result.isRight(), "Expected Right, got $result")
 //        val moduleInfoPath = result.getOrNull()
 //        assertTrue(moduleInfoPath!!.exists())
 //        assertTrue(moduleInfoPath.readText().contains("Dry-run delegate"))
@@ -147,7 +153,83 @@
 //
 //        val result = generator.generateDelegate(delegate, outputDir)
 //
-//        assertTrue(result.isLeft())
+//        assertTrue(result.isLeft(), "Expected Left, got $result")
 //        assertTrue(feedbackMessages.any { it.contains("Invalid delegate module") })
+//    }
+//
+//    @Test
+//    fun `should generate module-info for empty JAR`() {
+//        val jarPath = createDummyJar("empty.jar", entries = emptyMap())
+//        val outputDir = tempDir.resolve("output").createDirectories()
+//        val delegate = ZpmModuleKt(name = "zilla.delegate", paths = mutableSetOf(jarPath))
+//        val generator = ModuleInfoGenerator(feedback = feedback)
+//
+//        val result = generator.generate(jarPath, outputDir, delegate)
+//
+//        assertTrue(result.isRight(), "Expected Right, got $result")
+//        val moduleInfoPath = result.getOrNull()
+//        assertEquals(outputDir.resolve("module-info/zilla-install/module-info.java"), moduleInfoPath)
+//        assertTrue(moduleInfoPath!!.exists(), "Module info file should exist: $moduleInfoPath")
+//        val content = moduleInfoPath.readText()
+//        feedback("Generated module-info.java content:\n$content")
+//        assertTrue(content.contains("module zilla.install"), "Expected 'module zilla.install' in content")
+//        assertTrue(content.contains("requires zilla.delegate"), "Expected 'requires zilla.delegate' in content")
+//        assertFalse(content.contains("// com/example/Test.class"), "Expected no class entries in content")
+//        assertTrue(feedbackMessages.any { it.contains("✅ Generated") }, "Expected feedback '✅ Generated' in messages: $feedbackMessages")
+//    }
+//
+//    @Test
+//    fun `should generate module-info for JAR with non-class entries`() {
+//        val jarPath = createDummyJar("non-class.jar", entries = mapOf(
+//            "com/example/Test.class" to "dummy",
+//            "com/example/config.txt" to "config data",
+//            "com/example/" to "" // Directory entry
+//        ))
+//        val outputDir = tempDir.resolve("output").createDirectories()
+//        val delegate = ZpmModuleKt(name = "zilla.delegate", paths = mutableSetOf(jarPath))
+//        val generator = ModuleInfoGenerator(feedback = feedback)
+//
+//        val result = generator.generate(jarPath, outputDir, delegate)
+//
+//        assertTrue(result.isRight(), "Expected Right, got $result")
+//        val moduleInfoPath = result.getOrNull()
+//        assertEquals(outputDir.resolve("module-info/zilla-install/module-info.java"), moduleInfoPath)
+//        assertTrue(moduleInfoPath!!.exists(), "Module info file should exist: $moduleInfoPath")
+//        val content = moduleInfoPath.readText()
+//        feedback("Generated module-info.java content:\n$content")
+//        assertTrue(content.contains("module zilla.install"), "Expected 'module zilla.install' in content")
+//        assertTrue(content.contains("requires zilla.delegate"), "Expected 'requires zilla.delegate' in content")
+//        assertTrue(content.contains("com/example/Test.class"), "Expected 'com/example/Test.class' in content")
+//        assertFalse(content.contains("config.txt"), "Expected no 'config.txt' in content")
+//        assertFalse(content.contains("com/example/"), "Expected no directory entries in content")
+//        assertTrue(feedbackMessages.any { it.contains("✅ Generated") }, "Expected feedback '✅ Generated' in messages: $feedbackMessages")
+//    }
+//
+//    @Test
+//    fun `generateDelegate should handle multiple paths`() {
+//        val outputDir = tempDir.resolve("output").createDirectories()
+//        val delegate = ZpmModuleKt(
+//            name = "zilla.delegate",
+//            paths = mutableSetOf(
+//                createDummyJar("jar1.jar"),
+//                createDummyJar("jar2.jar"),
+//                tempDir.resolve("dummy.jar")
+//            )
+//        )
+//        val generator = ModuleInfoGenerator(feedback = feedback)
+//
+//        val result = generator.generateDelegate(delegate, outputDir)
+//
+//        assertTrue(result.isRight(), "Expected Right, got $result")
+//        val moduleInfoPath = result.getOrNull()
+//        assertEquals(outputDir.resolve("module-info/zilla-install/module-info.java"), moduleInfoPath)
+//        assertTrue(moduleInfoPath!!.exists())
+//        val content = moduleInfoPath.readText()
+//        assertTrue(content.contains("module zilla.delegate"), "Expected 'module zilla.delegate' in content")
+//        assertTrue(content.contains("requires transitive zilla.delegate"), "Expected 'requires transitive zilla.delegate' in content")
+//        assertTrue(content.contains("jar1.jar"), "Expected 'jar1.jar' in content")
+//        assertTrue(content.contains("jar2.jar"), "Expected 'jar2.jar' in content")
+//        assertTrue(content.contains("dummy.jar"), "Expected 'dummy.jar' in content")
+//        assertTrue(feedbackMessages.any { it.contains("✅ Generated") }, "Expected feedback '✅ Generated' in messages: $feedbackMessages")
 //    }
 //}
