@@ -39,6 +39,7 @@ import java.lang.module.ModuleDescriptor
 import java.nio.file.Paths
 import kotlin.io.path.isWritable
 import java.nio.file.attribute.PosixFilePermissions
+import kotlin.compareTo
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.deleteRecursively
 
@@ -798,12 +799,41 @@ open class MyZpmInstall(
         }
     }
 
+    // Helper function to compare versions (simple numeric comparison; enhance for qualifiers like -SNAPSHOT)
+    private fun compareVersions(v1: String, v2: String): Int {
+        val parts1 = v1.split('.').map { it.toIntOrNull() ?: 0 }
+        val parts2 = v2.split('.').map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(parts1.size, parts2.size)) {
+            val p1 = parts1.getOrElse(i) { 0 }
+            val p2 = parts2.getOrElse(i) { 0 }
+            if (p1 != p2) return p1.compareTo(p2)
+        }
+        return 0
+    }
+
+
+
     fun installFromTemplate(templatePath: Path, feedback: ((String) -> Unit)? = null): Either<Any, Unit> {
         return checkTemplate(templatePath, feedback)
             .flatMap { parseTemplate(templatePath, feedback) }
             .flatMap { template -> resolveDependencies(template, feedback) }
             .flatMap { artifacts ->
-                val modules = discoverModules(artifacts, feedback).toMutableList()
+                var modules = discoverModules(artifacts, feedback).toMutableList()
+                // Deduplicate modules by name, keeping highest version
+                val groupedModules = modules.groupBy { it.name ?: it.id.toString() }  // Use name or fallback to ID
+                val dedupedModules = groupedModules.mapValues { entry ->
+                    if (entry.value.size > 1) {
+                        feedback?.invoke("⚠️ Duplicate module ${entry.key}: ${entry.value.map { it.id?.version ?: "MissVersion" }} – selecting highest version")
+                        entry.value.maxByOrNull { module ->
+                            module.id?.version?.let { compareVersions(it, "0") } ?: 0  // Handle null versions
+                        } ?: entry.value.first()
+                    } else {
+                        entry.value.first()
+                    }
+                }.values.toMutableList()
+
+                // Replace modules with dedupedModules
+                modules = dedupedModules  // Continue with this list
                 val delegate = modules.find { it.name == ZpmModuleKt.DELEGATE_NAME } ?: ZpmModuleKt()
 
                 migrateUnnamed(modules, delegate, feedback).flatMap { _ ->

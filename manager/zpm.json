@@ -71,6 +71,8 @@
     "io.aklivity.zilla:resolver-env",
     "io.aklivity.zilla:vault-filesystem",
     "org.slf4j:slf4j-simple",
-    "org.antlr:antlr4-runtime"
+    "org.antlr:antlr4-runtime",
+    "org.eclipse:yasson",
+    "jakarta.json:jakarta.json-api:2.1.3"
   ]
 }

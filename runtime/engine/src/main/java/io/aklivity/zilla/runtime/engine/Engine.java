@@ -20,6 +20,7 @@ import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.stream.Collectors.toList;
 import static org.agrona.LangUtil.rethrowUnchecked;
 
+import java.io.IOException;
 import java.net.URL;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -156,9 +157,22 @@ public final class Engine implements Collector, AutoCloseable
         for (int workerIndex = 0; workerIndex < workerCount; workerIndex++)
         {
             EngineWorker worker =
-                new EngineWorker(config, tasks, labels, errorHandler, tuning::affinity, bindings, exporters,
-                    guards, vaults, catalogs, models, metricGroups, this, this::supplyEventReader,
-                    eventFormatterFactory, workerIndex, readonly, this::process);
+                    new EngineWorker(config, tasks, labels, errorHandler,
+                            id -> {
+                                try {
+                                    return tuning.affinity(id);   // ✅ normal case
+                                }
+                                catch (IOException ex) {
+                                    // ✅ Print full stack trace (or route to errorHandler)
+                                    ex.printStackTrace();
+
+                                    // ✅ Re-throw unchecked, but keep compiler happy
+                                    throw new RuntimeException(ex);
+                                }
+                            },
+                            bindings, exporters, guards, vaults, catalogs, models, metricGroups,
+                            this, this::supplyEventReader, eventFormatterFactory, workerIndex, readonly, this::process);
+
             workers.add(worker);
         }
         this.workers = workers;

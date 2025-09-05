@@ -55,7 +55,6 @@
     <dependency>
       <groupId>org.leadpony.joy</groupId>
       <artifactId>joy-yaml</artifactId>
-      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.agrona</groupId>
@@ -64,13 +63,6 @@
     <dependency>
       <groupId>org.eclipse</groupId>
       <artifactId>yasson</artifactId>
-      <scope>runtime</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>org.glassfish</groupId>
-          <artifactId>jakarta.json</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.dataformat</groupId>
@@ -162,6 +154,9 @@
       <plugin>
         <groupId>org.jasig.maven</groupId>
         <artifactId>maven-notice-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>${project.groupId}</groupId>

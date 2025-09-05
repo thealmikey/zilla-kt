@@ -193,6 +193,8 @@ public class EngineRegistry
     private void attachNamespace(
         NamespaceConfig namespace)
     {
+
+        System.out.printf("[%s] Attaching namespace %s in EngineRegistry%n", System.currentTimeMillis(), namespace.name);
         NamespaceRegistry registry =
                 new NamespaceRegistry(namespace, this::findNamespace, bindingsByType, guardsByType, vaultsByType, catalogsByType,
                     metricsByName, exportersByType, supplyLabelId, this::resolveMetric, exporterAttached, exporterDetached,

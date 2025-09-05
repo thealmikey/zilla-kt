@@ -71,6 +71,8 @@ public final class ZillaMain
             catch (Throwable ex)
             {
                 // TODO: debug output
+                System.err.println("❌ Zilla CLI command failed: " + ex.getMessage());
+                ex.printStackTrace(System.err);
                 status = 1;
             }
 

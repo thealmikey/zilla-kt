@@ -1,18 +1,3 @@
-/*
- * Copyright 2021-2024 Aklivity Inc.
- *
- * Aklivity licenses this file to you under the Apache License,
- * version 2.0 (the "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at:
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
- */
 package io.aklivity.zilla.runtime.binding.tcp.internal.stream;
 
 import static io.aklivity.zilla.runtime.engine.config.KindConfig.SERVER;
@@ -22,11 +7,12 @@ import java.io.IOException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
 
 import org.agrona.CloseHelper;
-import org.agrona.collections.Long2ObjectHashMap;
 
 import io.aklivity.zilla.runtime.binding.tcp.internal.TcpCapacityTracker;
 import io.aklivity.zilla.runtime.binding.tcp.internal.config.TcpBindingConfig;
@@ -36,56 +22,56 @@ import io.aklivity.zilla.runtime.engine.poller.PollerKey;
 
 public final class TcpServerRouter
 {
-    private final Long2ObjectHashMap<TcpBindingConfig> bindings;
     private final ToIntFunction<PollerKey> acceptHandler;
     private final Function<SelectableChannel, PollerKey> supplyPollerKey;
-    private final Long2ObjectHashMap<TcpServerBindingConfig> serversById;
     private final TcpCapacityTracker capacity;
+    private final ConcurrentHashMap<Long, TcpBindingConfig> bindings;
+    private final ConcurrentHashMap<Long, TcpServerBindingConfig> serversById;
 
     private boolean unbound;
 
     public TcpServerRouter(
-        EngineContext context,
-        ToIntFunction<PollerKey> acceptHandler,
-        TcpCapacityTracker capacity)
+            EngineContext context,
+            ToIntFunction<PollerKey> acceptHandler,
+            TcpCapacityTracker capacity)
     {
-        this.bindings = new Long2ObjectHashMap<>();
+        this.bindings = new ConcurrentHashMap<>();
+        this.serversById = new ConcurrentHashMap<>();
         this.supplyPollerKey = context::supplyPollerKey;
         this.acceptHandler = acceptHandler;
-        this.serversById = new Long2ObjectHashMap<>();
         this.capacity = capacity;
     }
 
     public void attach(
-        TcpBindingConfig binding)
+            TcpBindingConfig binding)
     {
-        bindings.put(binding.id, binding);
-
+        System.out.printf("[%s]Fix Updated for grok to see: Attaching bindingId %d in TcpServerRouter%n", System.currentTimeMillis(), binding.id);
+        if (bindings.putIfAbsent(binding.id, binding) != null) {
+            System.out.printf("[%s]Fix Updated for grok to see in binding check: Skipping duplicate attach for bindingId %d%n", System.currentTimeMillis(), binding.id);
+            return;
+        }
         register(binding);
     }
 
     public TcpBindingConfig resolve(
-        long bindingId,
-        long authorization)
+            long bindingId,
+            long authorization)
     {
         return bindings.get(bindingId);
     }
 
     public void detach(
-        long bindingId)
+            long bindingId)
     {
+        System.out.printf("[%s] Detaching bindingId %d in TcpServerRouter%n", System.currentTimeMillis(), bindingId);
         TcpBindingConfig binding = bindings.remove(bindingId);
-        unregister(binding);
-    }
-
-    @Override
-    public String toString()
-    {
-        return String.format("%s %s", getClass().getSimpleName(), bindings);
+        if (binding != null) {
+            unregister(binding);
+        }
     }
 
     public SocketChannel accept(
-        ServerSocketChannel server) throws IOException
+            ServerSocketChannel server) throws IOException
     {
         SocketChannel channel = null;
 
@@ -102,8 +88,8 @@ public final class TcpServerRouter
         if (!unbound && capacity.get() <= 0)
         {
             bindings.values().stream()
-                .filter(b -> b.kind == SERVER)
-                .forEach(this::unregister);
+                    .filter(b -> b.kind == SERVER)
+                    .forEach(this::unregister);
             unbound = true;
         }
 
@@ -111,7 +97,7 @@ public final class TcpServerRouter
     }
 
     public void close(
-        SocketChannel channel)
+            SocketChannel channel)
     {
         CloseHelper.quietClose(channel);
 
@@ -119,34 +105,76 @@ public final class TcpServerRouter
         if (unbound && newCapacity > 0)
         {
             bindings.values().stream()
-                .filter(b -> b.kind == SERVER)
-                .forEach(this::register);
+                    .filter(b -> b.kind == SERVER)
+                    .forEach(this::register);
             unbound = false;
         }
     }
 
-    private void register(
-        TcpBindingConfig binding)
+    private void register(TcpBindingConfig binding)
     {
-        TcpServerBindingConfig server = serversById.computeIfAbsent(binding.id, TcpServerBindingConfig::new);
-        ServerSocketChannel[] channels = server.bind(binding.options);
+        System.out.printf("[%s] Registering bindingId %d in TcpServerRouter%n",
+                System.currentTimeMillis(), binding.id);
+        System.out.printf(
+                "[%s] [TcpServerRouter] Worker %s: attempting to register server bindingId=%d (%s:%s)%n",
+                System.currentTimeMillis(),
+                Thread.currentThread().getName(),
+                binding.id,
+                binding.options.host,
+                Arrays.toString(binding.options.ports));
 
+        // Try to reuse existing bound channels (first worker wins, others reuse)
+        ServerSocketChannel[] channels = TcpServerBindRegistry.get(binding.id);
+        if (channels == null)
+        {
+            TcpServerBindingConfig server = serversById.computeIfAbsent(binding.id, TcpServerBindingConfig::new);
+            ServerSocketChannel[] freshlyBound = server.bind(binding.options);
+
+            // Publish once; if someone else beat us, close ours and reuse theirs
+            ServerSocketChannel[] existing = TcpServerBindRegistry.putIfAbsent(binding.id, freshlyBound);
+            if (existing != null) {
+                // Another worker bound first; close ours and reuse theirs
+                for (ServerSocketChannel ch : freshlyBound) {
+                    try { ch.close(); } catch (Exception ignore) { }
+                }
+                channels = existing;
+            } else {
+                channels = freshlyBound;
+            }
+        }
+
+        // Now (channels) is the single, JVM-wide bound array. Register with this worker’s poller.
         PollerKey[] acceptKeys = new PollerKey[channels.length];
         for (int i = 0; i < channels.length; i++)
         {
             acceptKeys[i] = supplyPollerKey.apply(channels[i]);
             acceptKeys[i].handler(OP_ACCEPT, acceptHandler);
             acceptKeys[i].register(OP_ACCEPT);
-
             acceptKeys[i].attach(binding);
         }
 
         binding.attach(acceptKeys);
+        System.out.printf(
+                "[%s] [TcpServerRouter] Worker %s: successfully registered bindingId=%d (%s:%s)%n",
+                System.currentTimeMillis(),
+                Thread.currentThread().getName(),
+                binding.id,
+                binding.options.host,
+                Arrays.toString(binding.options.ports));
     }
 
+
     private void unregister(
-        TcpBindingConfig binding)
+            TcpBindingConfig binding)
     {
+        System.out.printf("[%s] Unregistering bindingId %d in TcpServerRouter%n", System.currentTimeMillis(), binding.id);
+        System.out.printf(
+                "[%s] [TcpServerRouter] Worker %s: unregistering bindingId=%d (%s:%s)%n",
+                System.currentTimeMillis(),
+                Thread.currentThread().getName(),
+                binding.id,
+                binding.options.host,
+                Arrays.toString(binding.options.ports));
         PollerKey[] acceptKeys = binding.attach(null);
         if (acceptKeys != null)
         {

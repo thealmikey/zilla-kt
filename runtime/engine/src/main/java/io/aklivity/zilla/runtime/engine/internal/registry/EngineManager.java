@@ -382,7 +382,19 @@ public class EngineManager
             }
             binding.metricIds = metricIds.stream().mapToLong(Long::longValue).toArray();
 
-            long affinity = tuning.affinity(binding.id);
+            long affinity;
+            try {
+                affinity = tuning.affinity(binding.id);
+            }
+            catch (IOException ex) {
+                System.err.printf("[%s] Failed to read affinity for bindingId=%d: %s%n",
+                        System.currentTimeMillis(), binding.id, ex.getMessage());
+                ex.printStackTrace(System.err);
+
+                // escalate as unchecked
+                throw new RuntimeException("Error reading affinity for bindingId=" + binding.id, ex);
+            }
+
 
             final long maxbits = maxWorkers.apply(binding.type.intern().hashCode()).applyAsInt(binding.kind);
             for (int bitindex = 0; Long.bitCount(affinity) > maxbits; bitindex++)

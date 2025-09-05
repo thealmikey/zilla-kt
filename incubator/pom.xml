@@ -26,7 +26,6 @@
     <module>binding-pgsql</module>
     <module>binding-pgsql-kafka</module>
     <module>binding-risingwave</module>
-    <module>binding-claimcheck</module>
 
     <module>command-log</module>
     <module>command-dump</module>
