@@ -123,7 +123,16 @@ open class ZpmCacheKt(
             }
         }
 
-        // Step 2: Resolve dependencies
+        // Step 2: Create managed dependencies from zpm.json to enforce versions
+        val managedDependencies = dependencies.mapNotNull { dep ->
+            dep.version.getOrElse {
+                imported[ZpmDependencyKt(dep.groupId, dep.artifactId, arrow.core.none())]
+            }?.let { version ->
+                Dependency(DefaultArtifact(dep.groupId, dep.artifactId, "jar", version), JavaScopes.COMPILE)
+            }
+        }
+
+        // Step 3: Resolve dependencies
         val collectRequest = CollectRequest()
         dependencies.forEach { dep ->
             val version = dep.version.getOrElse {
@@ -134,6 +143,7 @@ open class ZpmCacheKt(
             collectRequest.addDependency(Dependency(artifact, JavaScopes.COMPILE))
         }
         repositories.forEach { collectRequest.addRepository(it) }
+        collectRequest.setManagedDependencies(managedDependencies) // Enforce versions from zpm.json
 
         val dependencyResult = try {
             system.resolveDependencies(session, DependencyRequest(collectRequest, null))
@@ -143,7 +153,7 @@ open class ZpmCacheKt(
             return ZpmResolutionErrorKt.DependencyResolutionError("dependencies", e).left()
         }
 
-        // Step 3: Process artifacts
+        // Step 4: Process artifacts
         val nlg = NodeListGenerator()
         dependencyResult.root.accept(PreorderDependencyNodeConsumerVisitor(nlg))
         nlg.getNodesWithDependencies().forEach { node ->

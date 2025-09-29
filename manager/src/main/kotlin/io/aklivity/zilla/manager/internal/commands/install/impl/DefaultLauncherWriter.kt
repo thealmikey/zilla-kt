@@ -11,28 +11,49 @@ import java.nio.file.StandardOpenOption
 
 class DefaultLauncherWriter(
     private val dryRun: Boolean = false,
-    private val feedback: (String) -> Unit = {x -> println(x)}
+    private val feedback: (String) -> Unit = { x -> println(x) }
 ) : LauncherWriter {
+
     override fun write(entryModule: String, outputDir: Path): Either<ZpmError, Path> = Either.catch {
-        val launcherPath = outputDir.resolve("zilla.bat")
+        val launcherPath = outputDir.resolve("zilla") // no .bat on Linux
         val imagePath = outputDir.resolve("image")
+
         if (dryRun) {
             feedback("🧪 [dry-run] Would write launcher for module $entryModule to $launcherPath")
             Files.createDirectories(outputDir)
-            Files.writeString(launcherPath, "@echo off\nREM Dry-run launcher\n", StandardOpenOption.CREATE)
+            Files.writeString(
+                launcherPath,
+                "#!/usr/bin/env bash\n# Dry-run launcher\n",
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING
+            )
+            launcherPath.toFile().setExecutable(true)
             feedback("✅ [dry-run] Wrote launcher to $launcherPath")
             launcherPath.right()
         } else {
             feedback("📝 Writing launcher for module io.aklivity.zilla.runtime.command to $launcherPath")
             Files.createDirectories(outputDir)
-            val javaBin = if (System.getProperty("os.name").lowercase().contains("win"))
-                "image\\bin\\java.exe" else "image/bin/java"
+
+            val javaBin = "image/bin/java"
+
             val launcherContent = """
-                @echo off
-                set ZILLA_DIRECTORY=%~dp0
-                %~dp0$javaBin --module-path %~dp0.zpm\modules -m io.aklivity.zilla.runtime.command/io.aklivity.zilla.runtime.command.internal.ZillaMain %*
-            """.trimIndent()
-            Files.writeString(launcherPath, launcherContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)
+    #!/usr/bin/env bash
+    ZILLA_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
+    exec "${'$'}ZILLA_DIRECTORY/$javaBin" \
+      --add-reads org.agrona.core=jdk.unsupported \
+      --module-path "${'$'}ZILLA_DIRECTORY/.zpm/modules" \
+      -m io.aklivity.zilla.runtime.command/io.aklivity.zilla.runtime.command.internal.ZillaMain \
+      "$@"
+""".trimIndent()
+
+
+            Files.writeString(
+                launcherPath,
+                launcherContent,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING
+            )
+            launcherPath.toFile().setExecutable(true) // important on Linux
             feedback("✅ Wrote launcher to $launcherPath")
             launcherPath.right()
         }
