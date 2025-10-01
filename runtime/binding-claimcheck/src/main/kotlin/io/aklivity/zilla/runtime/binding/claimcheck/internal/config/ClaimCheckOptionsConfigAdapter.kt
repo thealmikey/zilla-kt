@@ -4,13 +4,14 @@ import io.aklivity.zilla.runtime.engine.config.OptionsConfig
 import io.aklivity.zilla.runtime.engine.config.OptionsConfigAdapterSpi
 import jakarta.json.Json
 import jakarta.json.JsonObject
+import io.aklivity.zilla.runtime.binding.claimcheck.config.*
 
 class ClaimCheckOptionsConfigAdapter : OptionsConfigAdapterSpi {
     override fun kind(): OptionsConfigAdapterSpi.Kind? {
         return OptionsConfigAdapterSpi.Kind.BINDING
     }
 
-    override fun type(): String = "claim"
+    override fun type(): String = "claimcheck"
 
     override fun adaptFromJson(json: JsonObject?): OptionsConfig? =
         json?.let {
@@ -20,26 +21,22 @@ class ClaimCheckOptionsConfigAdapter : OptionsConfigAdapterSpi {
             val secretKey = minio.getString("secretKey", "")
             val bucket = minio.getString("bucket", "uploads")
 
-            ClaimCheckBindingConfig(
-                minio = ClaimCheckBindingConfig.MinioConfig(
+            ClaimCheckOptionsConfig(
                     endpoint = endpoint,
                     accessKey = accessKey,
                     secretKey = secretKey,
                     bucket = bucket
-                )
             )
         }
 
     override fun adaptToJson(options: OptionsConfig?): JsonObject? {
-        val config = options as? ClaimCheckBindingConfig ?: return null
+        val config = options as? ClaimCheckOptionsConfig ?: return null
 
         return Json.createObjectBuilder()
-            .add("minio", Json.createObjectBuilder()
-                .add("endpoint", config.minio.endpoint)
-                .add("accessKey", config.minio.accessKey)
-                .add("secretKey", config.minio.secretKey)
-                .add("bucket", config.minio.bucket)
-            )
-            .build()
+                .add("endpoint", config.endpoint)
+                .add("accessKey", config.accessKey)
+                .add("secretKey", config.secretKey)
+                .add("bucket", config.bucket)
+                .build()
     }
 }

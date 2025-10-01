@@ -2,8 +2,6 @@ module io.aklivity.zilla.runtime.binding.claimcheck
 {
     requires io.aklivity.zilla.runtime.engine;
     requires kotlin.stdlib;
-    requires StateMachine;
-    requires minio;
     requires jakarta.json;
     requires org.agrona.core;   // <-- FIXED
 
