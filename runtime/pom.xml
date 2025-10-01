@@ -64,6 +64,7 @@
     <module>model-protobuf</module>
     <module>resolver-env</module>
     <module>vault-filesystem</module>
+      <module>binding-claimcheck</module>
   </modules>
 
   <dependencyManagement>
