@@ -1,0 +1,24 @@
+---
+name: example
+bindings:
+  north_tcp_server:
+    type: tcp
+    kind: server
+    options:
+      host: 0.0.0.0
+      port: 7143
+    exit: north_http_server
+
+  north_http_server:
+    type: http
+    kind: server
+    routes:
+      - when:
+          - headers:
+              :scheme: http
+              :path: /*
+        exit: south_echo_client
+
+  south_echo_client:
+    type: echo
+    kind: server

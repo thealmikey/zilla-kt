@@ -41,6 +41,7 @@ import kotlin.io.path.isWritable
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.compareTo
 import kotlin.io.path.ExperimentalPathApi
+import kotlin.io.path.deleteExisting
 import kotlin.io.path.deleteRecursively
 
 open class MyZpmInstall(
@@ -671,7 +672,43 @@ open class MyZpmInstall(
     ): Either<ZpmResolutionErrorKt, Path> {
         feedback?.invoke("📦 Processing final module set before jlink")
         logger.debug("Processing modules: ${modules.map { it.name ?: it.id }}")
+        // 🔧 Minimal patch: drop kotlin stdlib split modules (jdk7/jdk8)
+        val stdlib = modules.find { it.name == "kotlin.stdlib" }
+        if (stdlib != null) {
+            val extras = modules.filter { it.name == "kotlin.stdlib.jdk7" || it.name == "kotlin.stdlib.jdk8" }
+            if (extras.isNotEmpty()) {
+                feedback?.invoke("⚠️ Detected Kotlin stdlib split modules: ${extras.map { it.name }}")
+                feedback?.invoke("   Removing them, since kotlin.stdlib already bundles JDK7/8 APIs")
+                logger.warn("Dropping Kotlin jdk7/jdk8 split modules in favor of kotlin.stdlib")
 
+                // 🗑 Delete JARs on disk
+                extras.forEach { mod ->
+                    mod.paths.forEach { jarPath ->
+                        try {
+                            if (jarPath.exists()) {
+                                jarPath.deleteExisting()
+                                feedback?.invoke("🗑 Deleted split JAR: $jarPath")
+                                logger.debug("Deleted extra Kotlin JAR: $jarPath")
+                            }
+                        } catch (ex: Exception) {
+                            val err = "Failed to delete ${jarPath.fileName}: ${ex.message}"
+                            feedback?.invoke("⚠️ $err")
+                            logger.warn(err, ex)
+                        }
+                    }
+                }
+
+                // Filter them out of the working set
+                val cleaned = modules - extras.toSet()
+                val safeModules = cleaned.map { m ->
+                    if (m.name?.startsWith("kotlin") == true) {
+                        m.copy(delegating = false) // 🚫 force non-delegating
+                    } else m
+                }
+                // 🚨 Restart processModules with cleaned modules
+                return processModules(delegate, safeModules, feedback)
+            }
+        }
         // Check for unhandled automatic modules, unless ignoring missing dependencies
         val strayAutomatics = modules.filter { it.automatic && !it.delegating }
         if (strayAutomatics.isNotEmpty() && !ignoreMissingDependencies) {
@@ -832,8 +869,24 @@ open class MyZpmInstall(
                     }
                 }.values.toMutableList()
 
+
+
+
                 // Replace modules with dedupedModules
                 modules = dedupedModules  // Continue with this list
+                // 🔧 Drop Kotlin jdk7/jdk8 split modules if kotlin-stdlib is already present
+                val hasStdlib = modules.any { it.name == "kotlin.stdlib" }
+                if (hasStdlib) {
+                    val extras = modules.filter { it.name == "kotlin.stdlib.jdk7" || it.name == "kotlin.stdlib.jdk8" }
+                    if (extras.isNotEmpty()) {
+                        feedback?.invoke("⚠️ Detected Kotlin stdlib split modules: ${extras.map { it.name }}")
+                        feedback?.invoke("   Removing them, since kotlin.stdlib already bundles JDK7/8 APIs")
+                        logger.warn("Dropping Kotlin jdk7/jdk8 split modules in favor of kotlin.stdlib")
+
+                        // Remove them globally
+                        modules = (modules - extras.toSet()).toMutableList()
+                    }
+                }
                 val delegate = modules.find { it.name == ZpmModuleKt.DELEGATE_NAME } ?: ZpmModuleKt()
 
                 migrateUnnamed(modules, delegate, feedback).flatMap { _ ->

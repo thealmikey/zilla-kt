@@ -220,21 +220,51 @@ open class ModuleInfoGenerator(
             return ZpmResolutionErrorKt.DependencyResolutionError("Delegate module ${delegate.name} has no paths").left()
         }
 
+        val cleanedPaths = delegate.paths.filterNot { path ->
+            val fileName = path.fileName.toString()
+            fileName.startsWith("kotlin") || fileName.startsWith("kotlin-stdlib-jdk8")
+        }.toMutableSet()
+        if (cleanedPaths.size != delegate.paths.size) {
+            feedback?.invoke("⚠️ Removing kotlin-stdlib-jdk7/jdk8 from delegate to avoid split-package conflict")
+            feedback?.invoke("Dropped jdk7/jdk8 from delegate.paths")
+            if (!dryRun) {
+                val dropped = delegate.paths - cleanedPaths
+                dropped.forEach { path ->
+                    try {
+                        if (path.exists()) {
+                            path.deleteExisting()
+                            feedback?.invoke("🗑 Deleted split JAR: $path")
+                           println("Deleted extra Kotlin JAR: $path")
+                        }
+                    } catch (ex: Exception) {
+                        val err = "Failed to delete ${path.fileName}: ${ex.message}"
+                        feedback?.invoke("⚠️ $err")
+                        println("$err, ${ex.message}")
+                    }
+                }
+            } else {
+                feedback?.invoke("🧪 [dry-run] Would delete split JARs: ${(delegate.paths - cleanedPaths).joinToString()}")
+            }
+        }
+
+// Use cleanedPaths instead of delegate.paths below
+        val effectiveDelegate = delegate.copy(paths = cleanedPaths)
+
         // Setting up directories and output path
         val generatedModulesDir = outputDir.resolve("modules").createDirectories()
-        val generatedDelegateDir = generatedModulesDir.resolve(delegate.name!!).createDirectories()
-        val generatedDelegatePath = generatedModulesDir.resolve("${delegate.name}.jar")
-        val finalDelegatePath = modulesDir?.resolve("${delegate.name}.jar") ?: outputDir.resolve("${delegate.name}.jar")
+        val generatedDelegateDir = generatedModulesDir.resolve(effectiveDelegate.name!!).createDirectories()
+        val generatedDelegatePath = generatedModulesDir.resolve("${effectiveDelegate.name}.jar")
+        val finalDelegatePath = modulesDir?.resolve("${effectiveDelegate.name}.jar") ?: outputDir.resolve("${effectiveDelegate.name}.jar")
 
         // Handling dry-run mode
         if (dryRun) {
-            feedback?.invoke("🧪 [dry-run] Would build delegate module ${delegate.name} from paths: ${delegate.paths}")
+            feedback?.invoke("🧪 [dry-run] Would build delegate module ${effectiveDelegate.name} from paths: ${effectiveDelegate.paths}")
             try {
                 val moduleInfoPath = generatedDelegateDir.resolve("module-info.java")
                 Files.writeString(
                     moduleInfoPath,
                     """
-                open module ${delegate.name} {
+                open module ${effectiveDelegate.name} {
                    
                 }
                 """.trimIndent()
@@ -252,7 +282,7 @@ open class ModuleInfoGenerator(
             ensureDirectoryWritable(generatedDelegateDir, "generated delegate directory").flatMap {
                 Either.catch {
                     // Merging contents from delegate.paths into a single JAR
-                    feedback?.invoke("📦 Merging ${delegate.paths.size} JARs for delegate module ${delegate.name}")
+                    feedback?.invoke("📦 Merging ${effectiveDelegate.paths.size} JARs for delegate module ${effectiveDelegate.name}")
                     JarOutputStream(Files.newOutputStream(generatedDelegatePath)).use { moduleJar ->
                         val moduleInfoPath = "module-info.class"
                         val manifestPath = "META-INF/MANIFEST.MF"
@@ -264,7 +294,7 @@ open class ModuleInfoGenerator(
                         val services = mutableMapOf<String, MutableList<String>>()
 
                         // Processing each input JAR
-                        delegate.paths.forEach { path ->
+                        effectiveDelegate.paths.forEach { path ->
                             feedback?.invoke("📜 Processing input JAR: $path")
                             JarFile(path.toFile()).use { artifactJar ->
                                 artifactJar.entries().asIterator().forEach { entry ->
@@ -310,7 +340,7 @@ open class ModuleInfoGenerator(
                     }
 
                     // Generating module-info.java using jdeps (always as open module)
-                    feedback?.invoke("📝 Generating module-info.java for delegate module ${delegate.name} (open module)")
+                    feedback?.invoke("📝 Generating module-info.java for delegate module ${effectiveDelegate.name} (open module)")
                     val jdeps = ToolProvider.findFirst("jdeps").orElseThrow { IllegalStateException("jdeps not found") }
                     val jdepsArgs = mutableListOf(
                         "--generate-open-module", generatedModulesDir.toString(),
@@ -338,7 +368,7 @@ open class ModuleInfoGenerator(
                     }
 
                     // Compiling module-info.java
-                    feedback?.invoke("📜 Compiling module-info.java for ${delegate.name}")
+                    feedback?.invoke("📜 Compiling module-info.java for ${effectiveDelegate.name}")
                     val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
                     val javacArgs = mutableListOf<String>()
                     if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
@@ -365,8 +395,8 @@ open class ModuleInfoGenerator(
 
                     val compiledModuleInfo = generatedDelegateDir.resolve("module-info.class")
                     if (!compiledModuleInfo.exists()) {
-                        feedback?.invoke("❌ Compiled module-info.class not found for ${delegate.name}")
-                        throw IOException("Compiled module-info.class not found for ${delegate.name}")
+                        feedback?.invoke("❌ Compiled module-info.class not found for ${effectiveDelegate.name}")
+                        throw IOException("Compiled module-info.class not found for ${effectiveDelegate.name}")
                     }
 
                     // Adding module-info.class to the final JAR
@@ -394,7 +424,7 @@ open class ModuleInfoGenerator(
                     finalDelegatePath
                 }.mapLeft { ex ->
                     feedback?.invoke("❌ Failed to build delegate module ${delegate.name}: ${ex.message}")
-                    ZpmResolutionErrorKt.DependencyResolutionError("Failed to build delegate module ${delegate.name}: ${ex.message}")
+                    ZpmResolutionErrorKt.DependencyResolutionError("Failed to build effectiveeffectiveDelegate module ${effectiveDelegate.name}: ${ex.message}")
                 }
             }
         }

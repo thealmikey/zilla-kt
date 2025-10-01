@@ -29,17 +29,6 @@ class JarCopier(
             return JarCopyError("Invalid JAR paths: ${invalidJars.joinToString()}").left()
         }
 
-        // Validate each JAR has .class files
-        jars.forEach { jar ->
-            JarFile(jar.toFile()).use { jarFile ->
-                val hasClasses = jarFile.entries().asSequence().any { it.name.endsWith(".class") && !it.isDirectory }
-                if (!hasClasses) {
-                    feedback("❌ JAR contains no class files: $jar")
-                    return JarCopyError("JAR contains no class files: $jar").left()
-                }
-            }
-        }
-
         val seenEntries = mutableSetOf<String>()
         return try {
             feedback("🛠 Copying ${jars.size} JARs to $outputJar")
