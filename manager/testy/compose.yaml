@@ -1,0 +1,26 @@
+services:
+
+  minio:
+    image: minio/minio:latest
+    container_name: minioz
+    ports:
+      - "9000:9000"     # MinIO API
+      - "9001:9001"     # MinIO Console (optional)
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+      - ./init:/init
+    entrypoint: sh /init/init.sh
+    networks:
+      - my_network
+
+
+volumes:
+  minio-data:
+
+networks:
+  my_network:
+    driver: bridge

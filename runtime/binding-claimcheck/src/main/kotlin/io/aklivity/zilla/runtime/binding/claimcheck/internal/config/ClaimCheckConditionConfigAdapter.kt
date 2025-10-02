@@ -1,12 +1,18 @@
 package io.aklivity.zilla.runtime.binding.claimcheck.internal.config
 
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.ClaimCheckBinding
 import io.aklivity.zilla.runtime.engine.config.ConditionConfig
+import io.aklivity.zilla.runtime.engine.config.ConditionConfigAdapterSpi
 import jakarta.json.Json
 import jakarta.json.JsonObject
 import jakarta.json.bind.adapter.JsonbAdapter
 
-class ClaimCheckConditionConfigAdapter : JsonbAdapter<ConditionConfig, JsonObject> {
-    private companion object {
+class ClaimCheckConditionConfigAdapter : ConditionConfigAdapterSpi, JsonbAdapter<ConditionConfig, JsonObject> {
+    override fun type(): String? {
+        return ClaimCheckBinding.NAME
+    }
+
+     companion object {
         const val PATH_NAME = "path"
         const val METHOD_NAME = "method"
     }

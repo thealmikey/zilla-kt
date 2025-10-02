@@ -1,8 +1,8 @@
 package io.aklivity.zilla.runtime.binding.claimcheck.internal.config
 
 
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.HttpBeginExFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.HttpHeaderFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.HttpHeaderFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpBeginExFW
 import io.aklivity.zilla.runtime.engine.config.ConditionConfig
 
 data class ClaimCheckConditionConfig(

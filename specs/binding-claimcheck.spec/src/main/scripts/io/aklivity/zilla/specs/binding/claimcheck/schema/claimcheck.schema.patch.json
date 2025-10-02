@@ -1,0 +1,45 @@
+[
+  {
+    "op": "add",
+    "path": "/$defs/binding/properties/type/enum/-",
+    "value": "claimcheck"
+  },
+  {
+    "op": "add",
+    "path": "/$defs/binding/allOf/-",
+    "value": {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "claimcheck"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "type": {
+            "const": "claimcheck"
+          },
+          "kind": {
+            "enum": ["proxy"]
+          },
+          "catalog": false,
+          "vault": false,
+          "options": {
+            "type": "object",
+            "properties": {
+              "endpoint": { "type": "string", "format": "uri" },
+              "accessKey": { "type": "string" },
+              "secretKey": { "type": "string" },
+              "bucket": { "type": "string" }
+            },
+            "required": ["endpoint", "accessKey", "secretKey", "bucket"],
+            "additionalProperties": false
+          },
+          "routes": true,
+          "exit": true
+        }
+      }
+    }
+  }
+]

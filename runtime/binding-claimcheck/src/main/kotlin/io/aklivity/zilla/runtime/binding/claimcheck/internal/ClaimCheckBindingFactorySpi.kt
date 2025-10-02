@@ -6,7 +6,9 @@ import io.aklivity.zilla.runtime.engine.binding.BindingFactorySpi
 
 class ClaimCheckBindingFactorySpi : BindingFactorySpi {
 
-    override fun type(): String = ClaimCheckBinding.NAME
+
+
+    override fun type(): String = "claimcheck"
 
 
 

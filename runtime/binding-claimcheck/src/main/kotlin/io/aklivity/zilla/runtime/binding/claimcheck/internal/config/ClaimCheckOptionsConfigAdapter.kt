@@ -15,17 +15,11 @@ class ClaimCheckOptionsConfigAdapter : OptionsConfigAdapterSpi {
 
     override fun adaptFromJson(json: JsonObject?): OptionsConfig? =
         json?.let {
-            val minio = it.getJsonObject("minio")
-            val endpoint = minio.getString("endpoint", "http://localhost:9000")
-            val accessKey = minio.getString("accessKey", "")
-            val secretKey = minio.getString("secretKey", "")
-            val bucket = minio.getString("bucket", "uploads")
-
             ClaimCheckOptionsConfig(
-                    endpoint = endpoint,
-                    accessKey = accessKey,
-                    secretKey = secretKey,
-                    bucket = bucket
+                endpoint = it.getString("endpoint", "http://localhost:9000"),
+                accessKey = it.getString("accessKey", ""),
+                secretKey = it.getString("secretKey", ""),
+                bucket = it.getString("bucket", "uploads")
             )
         }
 

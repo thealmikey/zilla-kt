@@ -4,7 +4,8 @@ import io.aklivity.zilla.runtime.binding.claimcheck.config.ClaimCheckWithConfig
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.ClaimCheckConfiguration
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.config.ClaimCheckBindingConfig
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.config.ClaimCheckOptionsConfig
-import io.aklivity.zilla.runtime.binding.http.internal.types.Flyweight
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.Flyweight
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.HttpHeaderFW
 import io.aklivity.zilla.runtime.engine.EngineContext
 import io.aklivity.zilla.runtime.engine.binding.BindingHandler
 import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer
@@ -13,19 +14,18 @@ import org.agrona.DirectBuffer
 import org.agrona.MutableDirectBuffer
 import org.agrona.concurrent.UnsafeBuffer
 import org.agrona.collections.Long2ObjectHashMap
-import io.aklivity.zilla.runtime.binding.http.internal.types.HttpHeaderFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.OctetsFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.String8FW
-import io.aklivity.zilla.runtime.binding.http.internal.types.String16FW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.AbortFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.BeginFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.DataFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.EndFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.FlushFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.HttpBeginExFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.HttpResetExFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.ResetFW
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.WindowFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.OctetsFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.String8FW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.String16FW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.AbortFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.BeginFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.DataFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.EndFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.FlushFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpBeginExFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpResetExFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.ResetFW
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.WindowFW
 import io.minio.GetPresignedObjectUrlArgs
 import io.minio.MinioClient
 import io.minio.PutObjectArgs
@@ -87,7 +87,7 @@ class ClaimCheckProxyFactory(
     private val httpTypeId: Int = context.supplyTypeId(HTTP_TYPE_NAME)
     private val claimCheckTypeId: Int = context.supplyTypeId(CLAIMCHECK_TYPE_NAME)
     private val bindings = Long2ObjectHashMap<ClaimCheckBindingConfig>()
-    private val options: ClaimCheckOptionsConfig = bindings.get(routedTypeId().toLong()).options
+
 
     private val beginRO = BeginFW()
     private val dataRO = DataFW()
@@ -301,7 +301,7 @@ class ClaimCheckProxyFactory(
             doBegin(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, affinity, extension)
         }
 
-        fun doHttpData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: Flyweight) {
+        fun doHttpData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: OctetsFW?) {
             doData(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, budgetId, flags, reserved, payload)
             replySeq += reserved
         }
@@ -352,6 +352,7 @@ class ClaimCheckProxyFactory(
         private val delegate: HttpProxy,
         private val resolved: ClaimCheckWithConfig
     ) {
+        private val options: ClaimCheckOptionsConfig = bindings.get(routedId).options
         private val initialId: Long = supplyInitialId.applyAsLong(routedId)
         private val replyId: Long = supplyReplyId.applyAsLong(initialId)
         private var filesystem: MessageConsumer? = null
@@ -380,7 +381,7 @@ class ClaimCheckProxyFactory(
             doClaimCheckWindow(traceId, authorization, 0L, resolved.inMemoryThreshold.toInt(), 0)
         }
 
-        fun doClaimCheckData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: Flyweight) {
+        fun doClaimCheckData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: OctetsFW) {
             val size = payload.sizeof()
             totalSize += size
             if (totalSize > resolved.maxPayloadSize) {
@@ -476,7 +477,9 @@ class ClaimCheckProxyFactory(
             if (!ClaimCheckState.replyClosed(state)) {
                 state = ClaimCheckState.closeReply(state)
                 cleanupTempFile()
-                doReset(filesystem!!, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, EMPTY_EXTENSION)
+                doReset(filesystem!!, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId,
+                    EMPTY_EXTENSION as HttpResetExFW?
+                )
             }
         }
 
@@ -676,7 +679,7 @@ class ClaimCheckProxyFactory(
         budgetId: Long,
         flags: Int,
         reserved: Int,
-        payload: Flyweight
+        payload: OctetsFW?
     ) {
         val data = dataRW.wrap(writeBuffer, 0, writeBuffer.capacity())
             .originId(originId)
@@ -690,7 +693,7 @@ class ClaimCheckProxyFactory(
             .flags(flags)
             .budgetId(budgetId)
             .reserved(reserved)
-            .payload(payload.buffer(), payload.offset(), payload.sizeof())
+            .payload(payload?.buffer(), payload?.offset() ?: 0, payload?.sizeof() ?: 0)
             .build()
         receiver.accept(data.typeId(), data.buffer(), data.offset(), data.sizeof())
     }
@@ -810,7 +813,7 @@ class ClaimCheckProxyFactory(
         acknowledge: Long,
         maximum: Int,
         traceId: Long,
-        extension: Flyweight
+        extension: HttpResetExFW?
     ) {
         val reset = resetRW.wrap(writeBuffer, 0, writeBuffer.capacity())
             .originId(originId)
@@ -820,7 +823,7 @@ class ClaimCheckProxyFactory(
             .acknowledge(acknowledge)
             .maximum(maximum)
             .traceId(traceId)
-            .extension(extension.buffer(), extension.offset(), extension.sizeof())
+            .extension(extension?.buffer(), extension?.offset() ?: 0, extension?.sizeof() ?: 0)
             .build()
         receiver.accept(reset.typeId(), reset.buffer(), reset.offset(), reset.sizeof())
     }

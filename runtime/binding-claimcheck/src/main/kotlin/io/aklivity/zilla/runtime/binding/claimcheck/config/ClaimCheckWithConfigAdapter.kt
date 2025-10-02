@@ -1,13 +1,20 @@
 package io.aklivity.zilla.runtime.binding.claimcheck.config
 
+import io.aklivity.zilla.runtime.binding.claimcheck.internal.ClaimCheckBinding
 import io.aklivity.zilla.runtime.engine.config.WithConfig
+import io.aklivity.zilla.runtime.engine.config.WithConfigAdapterSpi
 import jakarta.json.Json
 import jakarta.json.JsonObject
 import jakarta.json.bind.adapter.JsonbAdapter
 import kotlin.collections.associate
 import kotlin.collections.emptyMap
 
-class ClaimCheckWithConfigAdapter : JsonbAdapter<WithConfig, JsonObject> {
+class ClaimCheckWithConfigAdapter : WithConfigAdapterSpi, JsonbAdapter<WithConfig, JsonObject> {
+
+    override fun type(): String? {
+        return ClaimCheckBinding.NAME
+    }
+
     private companion object {
         const val TTL_NAME = "ttl"
         const val MAX_PAYLOAD_SIZE_NAME = "maxPayloadSize"

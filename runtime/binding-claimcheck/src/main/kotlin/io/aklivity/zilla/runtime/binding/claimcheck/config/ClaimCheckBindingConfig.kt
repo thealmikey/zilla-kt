@@ -2,7 +2,6 @@ package io.aklivity.zilla.runtime.binding.claimcheck.internal.config
 
 import io.aklivity.zilla.runtime.engine.config.BindingConfig
 import io.aklivity.zilla.runtime.binding.claimcheck.config.*
-import io.aklivity.zilla.runtime.binding.http.internal.types.stream.HttpBeginExFW
 
 data class ClaimCheckBindingConfig(
     val id: Long,
@@ -21,7 +20,7 @@ data class ClaimCheckBindingConfig(
 
     fun resolve(
         authorization: Long,
-        beginEx: HttpBeginExFW
+        beginEx: io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpBeginExFW
     ): ClaimCheckRouteConfig? {
         return routes.firstOrNull { route ->
             route.whenConditions.any { cond -> cond.matches(beginEx) }

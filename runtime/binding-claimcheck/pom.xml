@@ -51,11 +51,16 @@
       <artifactId>binding-http</artifactId>
       <scope>provided</scope>
   </dependency>
+      <dependency>
+          <groupId>${project.groupId}</groupId>
+          <artifactId>binding-claimcheck.spec</artifactId>
+          <version>${project.version}</version>
+          <scope>provided</scope>
+      </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
       <artifactId>engine</artifactId>
       <version>${project.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
@@ -170,7 +175,7 @@
         <artifactId>flyweight-maven-plugin</artifactId>
         <version>${project.version}</version>
         <configuration>
-          <scopeNames>claimcheck</scopeNames>
+          <scopeNames>core http</scopeNames>
           <packageName>io.aklivity.zilla.runtime.binding.claimcheck.internal.types</packageName>
         </configuration>
         <executions>
@@ -204,9 +209,33 @@
       <plugin>
         <artifactId>maven-checkstyle-plugin</artifactId>
       </plugin>
-      <plugin>
-        <artifactId>maven-dependency-plugin</artifactId>
-      </plugin>
+        <plugin>
+            <artifactId>maven-dependency-plugin</artifactId>
+            <executions>
+                <execution>
+                    <phase>process-resources</phase>
+                    <goals>
+                        <goal>unpack</goal>
+                    </goals>
+                    <configuration>
+                        <artifactItems>
+                            <artifactItem>
+                                <groupId>${project.groupId}</groupId>
+                                <artifactId>binding-claimcheck.spec</artifactId>
+                                <fileMappers>
+                                    <org.codehaus.plexus.components.io.filemappers.RegExpFileMapper>
+                                        <pattern>^\Qio/aklivity/zilla/specs/binding/claimcheck/\E</pattern>
+                                        <replacement>io/aklivity/zilla/runtime/binding/claimcheck/internal/</replacement>
+                                    </org.codehaus.plexus.components.io.filemappers.RegExpFileMapper>
+                                </fileMappers>
+                            </artifactItem>
+                        </artifactItems>
+                        <includes>io/aklivity/zilla/specs/binding/claimcheck/schema/claimcheck.schema.patch.json</includes>
+                        <outputDirectory>${project.build.directory}/classes</outputDirectory>
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
