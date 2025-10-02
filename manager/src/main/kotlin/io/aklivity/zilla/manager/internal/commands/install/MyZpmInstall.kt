@@ -83,6 +83,28 @@ open class MyZpmInstall(
         ZpmResolutionErrorKt.DependencyResolutionError("Failed to create empty JAR: ${it.message}")
     }
 
+    private fun createStubJar(modulePath: Path, moduleInfoClass: Path): Either<ZpmResolutionErrorKt, Path> =
+        Either.catch {
+            Files.createDirectories(modulePath.parent)
+            JarOutputStream(Files.newOutputStream(modulePath)).use { jos ->
+                // Write manifest
+                val manifestEntry = JarEntry("META-INF/MANIFEST.MF").apply { time = 318240000000L }
+                jos.putNextEntry(manifestEntry)
+                jos.write("Manifest-Version: 1.0\n".toByteArray())
+                jos.closeEntry()
+
+                // Write module-info.class
+                val moduleInfoEntry = JarEntry("module-info.class").apply { time = 318240000000L }
+                jos.putNextEntry(moduleInfoEntry)
+                Files.copy(moduleInfoClass, jos)
+                jos.closeEntry()
+            }
+            modulePath
+        }.mapLeft {
+            ZpmResolutionErrorKt.DependencyResolutionError("Failed to create stub jar: ${it.message}")
+        }
+
+
     open fun discoverModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): List<ZpmModuleKt> {
         val modules = mutableListOf<ZpmModuleKt>()
         val systemModulePrefixes = setOf("java.", "jdk.")
@@ -498,6 +520,7 @@ open class MyZpmInstall(
         val errors = mutableListOf<String>()
         feedback?.invoke("📝 Generating stub JARs for delegating modules")
         logger.debug("Generating stub JARs for modules: ${modules.map { it.name ?: it.id }}")
+
         val javac = ToolProvider.findFirst("javac").orElseThrow { IllegalStateException("javac not found") }
         val generatedModulesDir = generatedDir.resolve("modules").createDirectories()
 
@@ -509,8 +532,11 @@ open class MyZpmInstall(
             }
 
             try {
+                // each module gets its own dir
                 val generatedModuleDir = generatedModulesDir.resolve(module.name!!).createDirectories()
-                val moduleInfoPath = moduleInfoGenerator.createDelegatedStubs(module, generatedModulesDir).getOrElse { ex ->
+
+                // write module-info.java stub
+                val moduleInfoPath = moduleInfoGenerator.createDelegatedStubs(module, generatedModuleDir).getOrElse { ex ->
                     val error = "Failed to generate delegate module-info for ${module.name}: ${ex.message}"
                     if (ignoreMissingDependencies) {
                         feedback?.invoke("⚠️ $error, skipping due to ignoreMissingDependencies")
@@ -525,14 +551,21 @@ open class MyZpmInstall(
                 }
                 logger.debug("Generated delegate module-info at $moduleInfoPath")
 
-                val javacArgs = mutableListOf<String>()
-                if (atLeastVersion(javac, 21)) javacArgs.add("-proc:none")
-                javacArgs.addAll(listOf("--module-path", modulesDir.toString(), "-d", generatedModuleDir.toString(), moduleInfoPath.toString()))
+                // compile module-info.java -> module-info.class
+                val javacArgs = mutableListOf(
+                    "-proc:none", // disable annotation processors
+                    "--module-path", modulesDir.toString(),
+                    "-d", generatedModuleDir.toString(),
+                    moduleInfoPath.toString()
+                )
+
                 feedback?.invoke("📜 javac command for ${module.name}: ${javacArgs.joinToString(" ")}")
                 logger.debug("javac command: ${javacArgs.joinToString(" ")}")
+
                 val javacOut = ByteArrayOutputStream()
                 val javacErr = ByteArrayOutputStream()
                 val exitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *javacArgs.toTypedArray())
+
                 val javacErrStr = javacErr.toString(Charsets.UTF_8)
                 if (exitCode != 0) {
                     val error = "javac failed for ${module.name}: $javacErrStr"
@@ -549,6 +582,7 @@ open class MyZpmInstall(
                 }
                 feedback?.invoke("✅ Compiled delegate module-info for ${module.name}")
 
+                // locate compiled module-info.class
                 val moduleInfoClass = generatedModuleDir.resolve("module-info.class")
                 val multiReleaseModuleInfo = generatedModuleDir.resolve("META-INF/versions/9/module-info.class")
                 val (realModuleInfo, entryName) = when {
@@ -569,21 +603,9 @@ open class MyZpmInstall(
                     }
                 }
 
+                // create empty JAR
                 val modulePath = modulesDir.resolve("${module.name}.jar")
-                createEmptyJar(modulePath).getOrElse { ex ->
-                    val error = "Failed to create stub JAR for ${module.name}: ${ex.message}"
-                    if (ignoreMissingDependencies) {
-                        feedback?.invoke("⚠️ $error, skipping due to ignoreMissingDependencies")
-                        logger.warn(error)
-                        return@forEach
-                    } else {
-                        errors.add(error)
-                        feedback?.invoke("❌ $error")
-                        logger.error(error, ex)
-                        return@forEach
-                    }
-                }
-                jarExtender(modulePath, modulePath, JarEntry(entryName).apply { time = 318240000000L }, realModuleInfo).getOrElse { ex ->
+                createStubJar(modulePath, realModuleInfo).getOrElse { ex ->
                     val error = "Failed to extend stub JAR with module-info for ${module.name}: ${ex.message}"
                     if (ignoreMissingDependencies) {
                         feedback?.invoke("⚠️ $error, skipping due to ignoreMissingDependencies")
@@ -596,6 +618,7 @@ open class MyZpmInstall(
                         return@forEach
                     }
                 }
+
                 feedback?.invoke("✅ Generated stub JAR for ${module.name} at $modulePath")
                 logger.debug("Generated stub JAR for ${module.name} at $modulePath")
             } catch (e: Exception) {
@@ -618,6 +641,7 @@ open class MyZpmInstall(
             Unit.right()
         }
     }
+
 
     private fun copyNonDelegating(
         modules: Collection<ZpmModuleKt>,
@@ -850,52 +874,62 @@ open class MyZpmInstall(
 
 
 
-    fun installFromTemplate(templatePath: Path, feedback: ((String) -> Unit)? = null): Either<Any, Unit> {
+    fun installFromTemplate(
+        templatePath: Path,
+        feedback: ((String) -> Unit)? = null
+    ): Either<Any, Unit> {
         return checkTemplate(templatePath, feedback)
             .flatMap { parseTemplate(templatePath, feedback) }
             .flatMap { template -> resolveDependencies(template, feedback) }
             .flatMap { artifacts ->
                 var modules = discoverModules(artifacts, feedback).toMutableList()
-                // Deduplicate modules by name, keeping highest version
-                val groupedModules = modules.groupBy { it.name ?: it.id.toString() }  // Use name or fallback to ID
+
+                // 🔄 Deduplicate modules by name, keeping highest version
+                val groupedModules = modules.groupBy { it.name ?: it.id.toString() }
                 val dedupedModules = groupedModules.mapValues { entry ->
                     if (entry.value.size > 1) {
-                        feedback?.invoke("⚠️ Duplicate module ${entry.key}: ${entry.value.map { it.id?.version ?: "MissVersion" }} – selecting highest version")
+                        feedback?.invoke(
+                            "⚠️ Duplicate module ${entry.key}: " +
+                                    "${entry.value.map { it.id?.version ?: "MissVersion" }} – selecting highest version"
+                        )
                         entry.value.maxByOrNull { module ->
-                            module.id?.version?.let { compareVersions(it, "0") } ?: 0  // Handle null versions
+                            module.id?.version?.let { compareVersions(it, "0") } ?: 0
                         } ?: entry.value.first()
                     } else {
                         entry.value.first()
                     }
                 }.values.toMutableList()
 
+                // Replace modules with deduped list
+                modules = dedupedModules
 
-
-
-                // Replace modules with dedupedModules
-                modules = dedupedModules  // Continue with this list
-                // 🔧 Drop Kotlin jdk7/jdk8 split modules if kotlin-stdlib is already present
+                // 🔧 Drop Kotlin jdk7/jdk8 split modules if stdlib is present
                 val hasStdlib = modules.any { it.name == "kotlin.stdlib" }
                 if (hasStdlib) {
-                    val extras = modules.filter { it.name == "kotlin.stdlib.jdk7" || it.name == "kotlin.stdlib.jdk8" }
+                    val extras = modules.filter {
+                        it.name == "kotlin.stdlib.jdk7" || it.name == "kotlin.stdlib.jdk8"
+                    }
                     if (extras.isNotEmpty()) {
                         feedback?.invoke("⚠️ Detected Kotlin stdlib split modules: ${extras.map { it.name }}")
                         feedback?.invoke("   Removing them, since kotlin.stdlib already bundles JDK7/8 APIs")
                         logger.warn("Dropping Kotlin jdk7/jdk8 split modules in favor of kotlin.stdlib")
-
-                        // Remove them globally
                         modules = (modules - extras.toSet()).toMutableList()
                     }
                 }
+
+                // Locate or create the delegate module
                 val delegate = modules.find { it.name == ZpmModuleKt.DELEGATE_NAME } ?: ZpmModuleKt()
 
                 migrateUnnamed(modules, delegate, feedback).flatMap { _ ->
                     generateSystemOnlyAutomatic(modules, feedback).flatMap {
                         delegateAutomatic(modules, delegate, feedback).flatMap {
-                            // 🔑 FIX: generate stubs for *all* delegated automatics + delegate
-                            val delegatedModules = modules.filter { it.delegating && it.automatic && it.name != null } + delegate
-                            generateDelegating(delegatedModules, feedback).flatMap {
-                                processModules(delegate, modules, feedback).flatMap { targetJar ->
+                            // ✅ FIXED ORDER:
+                            // 1. Build delegate JAR first
+                            processModules(delegate, modules, feedback).flatMap { targetJar ->
+                                // 2. Now generate stub modules that require the delegate
+                                val delegatedModules = modules.filter { it.delegating && it.automatic && it.name != null }
+                                generateDelegating(delegatedModules, feedback).flatMap {
+                                    // 3. Finally, link the runtime image + launcher
                                     linkImageAndWriteLauncher(targetJar, feedback)
                                 }
                             }
@@ -904,6 +938,7 @@ open class MyZpmInstall(
                 }.map { Unit }
             }
     }
+
 
     private fun checkTemplate(templatePath: Path, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, Unit> {
         return Either.catch {
