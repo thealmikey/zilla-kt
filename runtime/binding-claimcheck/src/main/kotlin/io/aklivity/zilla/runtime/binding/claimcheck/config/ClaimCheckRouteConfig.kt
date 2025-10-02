@@ -12,5 +12,9 @@ data class ClaimCheckRouteConfig(
         id = route.id,
         with = route.with as? ClaimCheckWithConfig,
         whenConditions = route.`when`.filterIsInstance<ClaimCheckConditionConfig>()
-    )
+    ) {
+        println("ClaimCheckRouteConfig: Constructing route with id=$id")
+        println("ClaimCheckRouteConfig: With config: $with")
+        println("ClaimCheckRouteConfig: When conditions: $whenConditions")
+    }
 }

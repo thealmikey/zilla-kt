@@ -26,7 +26,7 @@
               }
             }
           ],
-          "exit": "north_echo_server"
+          "exit": "north_claimcheck_server"
         }
       ]
     },
@@ -44,7 +44,8 @@
           "when": [
             {
               "headers": {
-                ":path": "/claim"
+                ":path": "/claim",
+                ":method":"PUT"
               }
             }
           ],
