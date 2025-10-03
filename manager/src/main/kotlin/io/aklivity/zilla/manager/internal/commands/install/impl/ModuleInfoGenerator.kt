@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.PrintStream
+import java.lang.module.ModuleFinder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
@@ -210,12 +211,39 @@ open class ModuleInfoGenerator(
         }
     }
 
+    private fun getJarDependencies(jarPath: Path): Set<String> {
+        return try {
+            JarFile(jarPath.toFile()).use { jar ->
+                val moduleFinder = ModuleFinder.of(jarPath)
+                val moduleRefs = moduleFinder.findAll()
+                if (moduleRefs.isNotEmpty()) {
+                    // Named module: extract requires from module descriptor
+                    moduleRefs.flatMap { ref ->
+                        ref.descriptor().requires().map { it.name() }
+                    }.toSet()
+                } else {
+                    // Automatic module: check for Automatic-Module-Name in manifest
+                    val manifest = jar.manifest
+                    val moduleName = manifest?.mainAttributes?.getValue("Automatic-Module-Name")
+                    if (moduleName != null) {
+                        setOf(moduleName) // Treat it as a named module with no requires
+                    } else {
+                        emptySet() // Unnamed module, no dependencies
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            feedback?.invoke("⚠️ Failed to read dependencies from JAR $jarPath: ${e.message}")
+            emptySet()
+        }
+    }
+
 
     open fun buildDelegateModule(
         delegate: ZpmModuleKt,
         outputDir: Path,
         modulesDir: Path,
-        ignoreMissingDependencies: Boolean = true // default to true
+        ignoreMissingDependencies: Boolean = true
     ): Either<ZpmResolutionErrorKt, Path> {
         if (delegate.name == null) {
             feedback?.invoke("⚠️ Skipping delegate module generation for unnamed module ${delegate.id}")
@@ -239,8 +267,7 @@ open class ModuleInfoGenerator(
         val generatedModulesDir = outputDir.resolve("modules").createDirectories()
         val generatedDelegateDir = generatedModulesDir.resolve(effectiveDelegate.name!!).createDirectories()
         val generatedDelegatePath = generatedModulesDir.resolve("${effectiveDelegate.name}.jar")
-        val finalDelegatePath = modulesDir?.resolve("${effectiveDelegate.name}.jar")
-            ?: outputDir.resolve("${effectiveDelegate.name}.jar")
+        val finalDelegatePath = modulesDir.resolve("${effectiveDelegate.name}.jar")
 
         if (dryRun) {
             feedback?.invoke("🧪 [dry-run] Would build delegate module ${effectiveDelegate.name}")
@@ -259,12 +286,28 @@ open class ModuleInfoGenerator(
         return ensureDirectoryWritable(generatedModulesDir, "generated modules directory").flatMap {
             ensureDirectoryWritable(generatedDelegateDir, "generated delegate directory").flatMap {
                 Either.catch {
-                    // merge jars
+                    // Collect all module names and dependencies from merged JARs
+                    val mergedModuleNames = mutableSetOf<String>()
+                    val allDependencies = mutableSetOf<String>()
+
+                    // Merge JARs and collect dependencies
                     feedback?.invoke("📦 Merging ${effectiveDelegate.paths.size} JARs for delegate module ${effectiveDelegate.name}")
                     JarOutputStream(Files.newOutputStream(generatedDelegatePath)).use { moduleJar ->
                         val entryNames = mutableSetOf<String>()
                         effectiveDelegate.paths.forEach { path ->
+                            val jarDependencies = getJarDependencies(path)
+                            allDependencies.addAll(jarDependencies)
                             JarFile(path.toFile()).use { jar ->
+                                val manifest = jar.manifest
+                                val moduleName = manifest?.mainAttributes?.getValue("Automatic-Module-Name")
+                                if (moduleName != null) {
+                                    mergedModuleNames.add(moduleName)
+                                } else if (hasRealModuleInfo(path)) {
+                                    val moduleFinder = ModuleFinder.of(path)
+                                    moduleFinder.findAll().forEach { ref ->
+                                        mergedModuleNames.add(ref.descriptor().name())
+                                    }
+                                }
                                 jar.entries().asIterator().forEach { entry ->
                                     if (entryNames.add(entry.name)) {
                                         moduleJar.putNextEntry(JarEntry(entry.name).apply { time = entry.time })
@@ -278,14 +321,18 @@ open class ModuleInfoGenerator(
                         }
                     }
 
-                    // run jdeps
+                    // Filter out dependencies that are merged into the delegate
+                    val externalDependencies = (allDependencies - mergedModuleNames).toMutableSet()
+                    externalDependencies.add("jdk.unsupported") // Ensure jdk.unsupported is included
+
+                    // Run jdeps
                     feedback?.invoke("📝 Running jdeps for ${effectiveDelegate.name} (ignore-missing-deps enabled)")
                     val jdeps = ToolProvider.findFirst("jdeps")
                         .orElseThrow { IllegalStateException("jdeps not found") }
                     val jdepsArgs = mutableListOf(
-                        "--ignore-missing-deps", // 👈 force ignore
+                        "--ignore-missing-deps",
                         "--generate-open-module", generatedDelegateDir.toString(),
-                        "--module-path", modulesDir?.toString() ?: "",
+                        "--module-path", modulesDir.toString(),
                         generatedDelegatePath.toString()
                     )
 
@@ -297,24 +344,24 @@ open class ModuleInfoGenerator(
                     val generatedModuleInfo = generatedDelegateDir.resolve("module-info.java")
                     if (jdepsExitCode != 0 || !generatedModuleInfo.exists()) {
                         feedback?.invoke("⚠️ jdeps failed, falling back to minimal module-info: $jdepsErrStr")
-                        Files.writeString(generatedModuleInfo, "open module ${effectiveDelegate.name} { }")
                     }
 
-                    // patch module-info
+                    // Patch module-info with exports and filtered requires
                     val allPackages = getValidPackages(generatedDelegatePath)
                     val patchedContent = buildString {
                         appendLine("open module ${effectiveDelegate.name} {")
                         allPackages.forEach { pkg -> appendLine("    exports $pkg;") }
+                        externalDependencies.forEach { dep -> appendLine("    requires $dep;") }
                         appendLine("}")
                     }
                     Files.writeString(generatedModuleInfo, patchedContent)
 
-                    // compile module-info.java
+                    // Compile module-info.java
                     val javac = ToolProvider.findFirst("javac")
                         .orElseThrow { IllegalStateException("javac not found") }
 
                     val javacArgs = listOf(
-                        "-proc:none",             // disable annotation processing
+                        "-proc:none",
                         "--patch-module", "${effectiveDelegate.name}=${generatedDelegatePath.toString()}",
                         "-d", generatedDelegateDir.toString(),
                         generatedModuleInfo.toString()
@@ -327,7 +374,7 @@ open class ModuleInfoGenerator(
                         throw IOException("javac failed: ${javacErr.toString(Charsets.UTF_8)}")
                     }
 
-                    // finalize JAR
+                    // Finalize JAR
                     val compiledModuleInfo = generatedDelegateDir.resolve("module-info.class")
                     val tempJar = Files.createTempFile("temp-delegate", ".jar")
                     JarFile(generatedDelegatePath.toFile()).use { src ->
@@ -345,7 +392,7 @@ open class ModuleInfoGenerator(
                     }
                     Files.move(tempJar, finalDelegatePath, StandardCopyOption.REPLACE_EXISTING)
 
-                    feedback?.invoke("✅ Built delegate JAR at $finalDelegatePath with ${allPackages.size} exports (ignore-missing-deps)")
+                    feedback?.invoke("✅ Built delegate JAR at $finalDelegatePath with ${allPackages.size} exports and ${externalDependencies.size} requires")
                     finalDelegatePath
                 }.mapLeft { ex ->
                     feedback?.invoke("❌ Failed to build delegate module ${delegate.name}: ${ex.message}")
