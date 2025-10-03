@@ -238,7 +238,6 @@ open class ModuleInfoGenerator(
         }
     }
 
-
     open fun buildDelegateModule(
         delegate: ZpmModuleKt,
         outputDir: Path,
@@ -324,6 +323,7 @@ open class ModuleInfoGenerator(
                     // Filter out dependencies that are merged into the delegate
                     val externalDependencies = (allDependencies - mergedModuleNames).toMutableSet()
                     externalDependencies.add("jdk.unsupported") // Ensure jdk.unsupported is included
+                    externalDependencies.add("kotlin.stdlib") // Ensure kotlin.stdlib is required
 
                     // Run jdeps
                     feedback?.invoke("📝 Running jdeps for ${effectiveDelegate.name} (ignore-missing-deps enabled)")
@@ -357,11 +357,13 @@ open class ModuleInfoGenerator(
                     Files.writeString(generatedModuleInfo, patchedContent)
 
                     // Compile module-info.java
+                    feedback?.invoke("📝 Compiling module-info.java with module path: ${modulesDir}")
                     val javac = ToolProvider.findFirst("javac")
                         .orElseThrow { IllegalStateException("javac not found") }
 
                     val javacArgs = listOf(
                         "-proc:none",
+                        "--module-path", modulesDir.toString(),
                         "--patch-module", "${effectiveDelegate.name}=${generatedDelegatePath.toString()}",
                         "-d", generatedDelegateDir.toString(),
                         generatedModuleInfo.toString()
@@ -370,8 +372,10 @@ open class ModuleInfoGenerator(
                     val javacOut = ByteArrayOutputStream()
                     val javacErr = ByteArrayOutputStream()
                     val javacExitCode = javac.run(PrintStream(javacOut), PrintStream(javacErr), *javacArgs.toTypedArray())
+                    val javacErrStr = javacErr.toString(Charsets.UTF_8)
                     if (javacExitCode != 0) {
-                        throw IOException("javac failed: ${javacErr.toString(Charsets.UTF_8)}")
+                        feedback?.invoke("❌ javac error: $javacErrStr")
+                        throw IOException("javac failed: $javacErrStr")
                     }
 
                     // Finalize JAR
@@ -404,7 +408,6 @@ open class ModuleInfoGenerator(
         }
     }
 
-
     private fun getValidPackages(jarPath: Path): Set<String> {
         return try {
             JarFile(jarPath.toFile()).use { jar ->
@@ -425,7 +428,6 @@ open class ModuleInfoGenerator(
             emptySet()
         }
     }
-
 
     private fun filterModuleInfo(content: String, validPackages: Set<String>, module: ZpmModuleKt): String {
         val lines = content.lines()
@@ -560,7 +562,6 @@ open class ModuleInfoGenerator(
         }
     }
 
-
     fun patchMultiReleaseJar(jarPath: Path, feedback: ((String) -> Unit)? = null): Path {
         val file = jarPath.toFile()
         if (!file.exists()) return jarPath
@@ -647,5 +648,4 @@ open class ModuleInfoGenerator(
         val atLeast = version >= major
         return atLeast
     }
-
 }
