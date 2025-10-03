@@ -6,8 +6,6 @@ import arrow.core.left
 import arrow.core.right
 import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmModuleKt
 import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmResolutionErrorKt
-import io.aklivity.zilla.manager.internal.utils.JarCopyMode
-import io.aklivity.zilla.manager.internal.utils.JarEntryFilter
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -320,18 +318,13 @@ open class ModuleInfoGenerator(
                         }
                     }
 
-                    // Filter out dependencies that are merged into the delegate
-                    val externalDependencies = (allDependencies - mergedModuleNames).toMutableSet()
-                    externalDependencies.add("jdk.unsupported") // Ensure jdk.unsupported is included
-                    externalDependencies.add("kotlin.stdlib") // Ensure kotlin.stdlib is required
-
-                    // Run jdeps
-                    feedback?.invoke("📝 Running jdeps for ${effectiveDelegate.name} (ignore-missing-deps enabled)")
+                    // Run jdeps to get all dependencies, including system modules
+                    feedback?.invoke("📝 Running jdeps to analyze dependencies for ${effectiveDelegate.name}")
                     val jdeps = ToolProvider.findFirst("jdeps")
                         .orElseThrow { IllegalStateException("jdeps not found") }
                     val jdepsArgs = mutableListOf(
+                        "--print-module-deps",
                         "--ignore-missing-deps",
-                        "--generate-open-module", generatedDelegateDir.toString(),
                         "--module-path", modulesDir.toString(),
                         generatedDelegatePath.toString()
                     )
@@ -339,12 +332,48 @@ open class ModuleInfoGenerator(
                     val jdepsOut = ByteArrayOutputStream()
                     val jdepsErr = ByteArrayOutputStream()
                     val jdepsExitCode = jdeps.run(PrintStream(jdepsOut), PrintStream(jdepsErr), *jdepsArgs.toTypedArray())
+                    val jdepsOutStr = jdepsOut.toString(Charsets.UTF_8).trim()
                     val jdepsErrStr = jdepsErr.toString(Charsets.UTF_8)
 
-                    val generatedModuleInfo = generatedDelegateDir.resolve("module-info.java")
-                    if (jdepsExitCode != 0 || !generatedModuleInfo.exists()) {
-                        feedback?.invoke("⚠️ jdeps failed, falling back to minimal module-info: $jdepsErrStr")
+                    if (jdepsErrStr.isNotEmpty()) {
+                        feedback?.invoke("📜 jdeps error output for ${effectiveDelegate.name}: $jdepsErrStr")
                     }
+
+                    // Parse jdeps output to get dependencies, filtering out warnings
+                    val jdepsDependencies = if (jdepsExitCode == 0 && jdepsOutStr.isNotEmpty()) {
+                        jdepsOutStr.split("\n")
+                            .filter { !it.startsWith("Warning: split package:") } // Filter out split package warnings
+                            .flatMap { it.split(",").map { dep -> dep.trim() } }
+                            .filter { it.isNotEmpty() && it.matches(Regex("[a-zA-Z0-9._-]+")) } // Ensure valid module names
+                            .toSet()
+                    } else {
+                        feedback?.invoke("⚠️ jdeps failed to detect dependencies: $jdepsErrStr")
+                        emptySet()
+                    }
+                    feedback?.invoke("📜 jdeps detected dependencies: $jdepsDependencies")
+                    allDependencies.addAll(jdepsDependencies)
+
+                    // Run jdeps again to generate module-info.java
+                    val moduleInfoArgs = mutableListOf(
+                        "--generate-open-module",
+                        generatedDelegateDir.toString(),
+                        "--module-path", modulesDir.toString(),
+                        generatedDelegatePath.toString()
+                    )
+
+                    val moduleInfoOut = ByteArrayOutputStream()
+                    val moduleInfoErr = ByteArrayOutputStream()
+                    val moduleInfoExitCode = jdeps.run(PrintStream(moduleInfoOut), PrintStream(moduleInfoErr), *moduleInfoArgs.toTypedArray())
+                    val moduleInfoErrStr = moduleInfoErr.toString(Charsets.UTF_8)
+
+                    val generatedModuleInfo = generatedDelegateDir.resolve("module-info.java")
+                    if (moduleInfoExitCode != 0 || !generatedModuleInfo.exists()) {
+                        feedback?.invoke("⚠️ jdeps failed to generate module-info: $moduleInfoErrStr")
+                    }
+
+                    // Include all dependencies, excluding only merged module names
+                    val externalDependencies = (allDependencies - mergedModuleNames).toMutableSet()
+                    externalDependencies.add("kotlin.stdlib") // Hardcode kotlin.stdlib as requested
 
                     // Patch module-info with exports and filtered requires
                     val allPackages = getValidPackages(generatedDelegatePath)
