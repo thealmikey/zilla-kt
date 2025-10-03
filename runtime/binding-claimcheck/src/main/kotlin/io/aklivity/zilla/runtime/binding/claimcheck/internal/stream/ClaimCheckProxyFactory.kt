@@ -152,6 +152,7 @@ class ClaimCheckProxyFactory(
         length: Int,
         sender: MessageConsumer
     ): MessageConsumer? {
+        println("MIKE: Testing quicker reloads!!")
         println("ClaimCheckProxyFactory: Entering newStream(msgTypeId=$msgTypeId, index=$index, length=$length)")
         try {
             if (msgTypeId != BeginFW.TYPE_ID) {
@@ -166,8 +167,21 @@ class ClaimCheckProxyFactory(
             val authorization = begin.authorization()
             val extension = begin.extension()
             println("ClaimCheckProxyFactory: Processing BeginFW: originId=$originId, routedId=$routedId, initialId=$initialId, authorization=$authorization")
+//            println("ClaimCheckProxyFactory: Extension size=${extension.sizeof()}, content=${if (extension.sizeof() > 0) extension.buffer().getBytes(extension.offset(), extension.sizeof()).joinToString("") { "%02x".format(it) } else "empty"}")
 
-            val beginEx = extension.get(httpBeginExRO::tryWrap)
+            val beginEx = if (extension.sizeof() > 0) {
+                val typeId = extension.buffer().getInt(extension.offset())
+                println("ClaimCheckProxyFactory: Extension typeId=$typeId, expected=$httpTypeId")
+                if (typeId == httpTypeId) {
+                    extension.get(httpBeginExRO::tryWrap)
+                } else {
+                    println("ClaimCheckProxyFactory: Unexpected extension typeId=$typeId, expected=$httpTypeId")
+                    null
+                }
+            } else {
+                println("ClaimCheckProxyFactory: Empty extension, returning null")
+                null
+            }
             if (beginEx == null) {
                 println("ClaimCheckProxyFactory: Failed to wrap HTTP extension, returning null")
                 return null
@@ -254,6 +268,7 @@ class ClaimCheckProxyFactory(
         var replyMax: Int = 0
 
         fun newStream(): MessageConsumer {
+            println("MIKE: Testing quicker reloads in HttpProxy!!")
             println("HttpProxy: Entering newStream(initialId=$initialId)")
             try {
                 val result = MessageConsumer { t, b, i, l ->
