@@ -13,42 +13,47 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-package io.aklivity.zilla.runtime.engine.test.internal.binding;
+package io.aklivity.zilla.runtime.engine.internal.metrics;
 
-import java.net.URL;
-
-import io.aklivity.zilla.runtime.engine.Configuration;
 import io.aklivity.zilla.runtime.engine.EngineContext;
-import io.aklivity.zilla.runtime.engine.binding.Binding;
+import io.aklivity.zilla.runtime.engine.metrics.Metric;
+import io.aklivity.zilla.runtime.engine.metrics.MetricContext;
 
-public final class TestBinding implements Binding
+public final class EngineWorkersUsageMetric implements Metric
 {
-    public static final String NAME = "test";
+    public static final String NAME = String.format("%s.%s", EngineMetricGroup.NAME, "workers.usage");
 
-    private final Configuration config;
-
-    TestBinding(
-        Configuration config)
-    {
-        this.config = config;
-    }
+    private static final String DESCRIPTION = "Engine workers usage";
 
     @Override
     public String name()
     {
-        return "test";
+        return NAME;
     }
 
     @Override
-    public URL type()
+    public Kind kind()
     {
-        return getClass().getResource("test.schema.patch.json");
+        return Kind.GAUGE;
     }
 
     @Override
-    public TestBindingContext supply(
+    public Unit unit()
+    {
+        return Unit.COUNT;
+    }
+
+    @Override
+    public String description()
+    {
+        return DESCRIPTION;
+    }
+
+    @Override
+    public MetricContext supply(
         EngineContext context)
     {
-        return new TestBindingContext(config, context);
+        //Unsupported metric context
+        return null;
     }
 }

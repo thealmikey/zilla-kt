@@ -22,8 +22,6 @@ import static io.aklivity.zilla.runtime.engine.metrics.MetricContext.Direction.R
 import static io.aklivity.zilla.runtime.engine.metrics.MetricContext.Direction.SENT;
 
 import java.util.Collection;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -127,26 +125,11 @@ public class NamespaceRegistry
 
     public void attach()
     {
-        System.out.printf("[%s] Mike Updated for sure: Thread %s: Attaching namespace %s in NamespaceRegistry%n",
-                System.currentTimeMillis(), Thread.currentThread().getName(), namespace.name);
-        System.out.printf("[%s] Number of bindings: %d%n", System.currentTimeMillis(), namespace.bindings.size());
-        Set<Long> processedBindingIds = new HashSet<>();
         namespace.vaults.forEach(this::attachVault);
         namespace.guards.forEach(this::attachGuard);
         namespace.catalogs.forEach(this::attachCatalog);
         namespace.telemetry.metrics.forEach(this::attachMetric);
-        namespace.bindings.forEach(binding -> {
-            System.out.printf("[%s] Thread %s: Processing binding %s (id=%d) in NamespaceRegistry%n",
-                    System.currentTimeMillis(), Thread.currentThread().getName(), binding.name, binding.id);
-            if (processedBindingIds.contains(binding.id))
-            {
-                System.out.printf("[%s] Thread %s: Skipping duplicate binding %s (id=%d) in NamespaceRegistry%n",
-                        System.currentTimeMillis(), Thread.currentThread().getName(), binding.name, binding.id);
-                return;
-            }
-            processedBindingIds.add(binding.id);
-            attachBinding(binding);
-        });
+        namespace.bindings.forEach(this::attachBinding);
         namespace.telemetry.exporters.forEach(this::attachExporter);
     }
 
@@ -168,15 +151,11 @@ public class NamespaceRegistry
     private void attachBinding(
         BindingConfig config)
     {
-        Set<Long> processedBindingIds = new HashSet<>();
         BindingContext context = bindingsByType.apply(config.type);
         assert context != null : "Missing binding type: " + config.type;
 
         int bindingId = supplyLabelId.applyAsInt(config.name);
         BindingRegistry registry = new BindingRegistry(config, context);
-        System.out.printf("[%s] Attaching binding %s (id=%d) in NamespaceRegistry%n USED config.name",
-                System.currentTimeMillis(), config.name, bindingId);
-
         bindingsById.put(bindingId, registry);
         registry.attach();
         setMetricHandlers(registry, config);

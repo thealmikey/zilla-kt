@@ -13,15 +13,14 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-package io.aklivity.zilla.runtime.engine.config;
+package io.aklivity.zilla.runtime.engine;
 
-public enum KindConfig
+import java.nio.channels.SelectableChannel;
+
+import io.aklivity.zilla.runtime.engine.poller.PollerKey;
+
+public interface EngineController
 {
-    SERVER,
-    CLIENT,
-    PROXY,
-    REMOTE_CLIENT,
-    REMOTE_SERVER,
-    CACHE_CLIENT,
-    CACHE_SERVER
+    PollerKey supplyPollerKey(
+        SelectableChannel channel);
 }

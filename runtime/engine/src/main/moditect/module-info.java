@@ -77,6 +77,4 @@ module io.aklivity.zilla.runtime.engine
     uses io.aklivity.zilla.runtime.engine.vault.VaultFactorySpi;
     uses io.aklivity.zilla.runtime.engine.ext.EngineExtSpi;
     uses io.aklivity.zilla.runtime.engine.resolver.ResolverFactorySpi;
-
-    opens io.aklivity.zilla.runtime.engine.config;
 }

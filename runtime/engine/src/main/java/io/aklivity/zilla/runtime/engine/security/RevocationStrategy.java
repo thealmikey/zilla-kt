@@ -13,15 +13,10 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-package io.aklivity.zilla.runtime.engine.config;
+package io.aklivity.zilla.runtime.engine.security;
 
-public enum KindConfig
+public enum RevocationStrategy
 {
-    SERVER,
-    CLIENT,
-    PROXY,
-    REMOTE_CLIENT,
-    REMOTE_SERVER,
-    CACHE_CLIENT,
-    CACHE_SERVER
+    CRL,
+    NONE
 }

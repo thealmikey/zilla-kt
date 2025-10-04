@@ -64,8 +64,8 @@
       ]
     },
     "north_echo_server": {
-      "type": "echo",
-      "kind": "server"
+      "type": "tcp",
+      "kind": "client"
     }
   },
   "telemetry": {

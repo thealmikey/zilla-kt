@@ -175,7 +175,7 @@ public class EngineRegistry
 
     public void detachAll()
     {
-        namespacesById.values().forEach(n -> n.detach());
+        namespacesById.values().forEach(NamespaceRegistry::detach);
         namespacesById.clear();
     }
 
@@ -193,8 +193,6 @@ public class EngineRegistry
     private void attachNamespace(
         NamespaceConfig namespace)
     {
-
-        System.out.printf("[%s] Attaching namespace %s in EngineRegistry%n", System.currentTimeMillis(), namespace.name);
         NamespaceRegistry registry =
                 new NamespaceRegistry(namespace, this::findNamespace, bindingsByType, guardsByType, vaultsByType, catalogsByType,
                     metricsByName, exportersByType, supplyLabelId, this::resolveMetric, exporterAttached, exporterDetached,

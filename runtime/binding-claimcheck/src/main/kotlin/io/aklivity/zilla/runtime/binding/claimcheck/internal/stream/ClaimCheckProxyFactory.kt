@@ -6,14 +6,6 @@ import io.aklivity.zilla.runtime.binding.claimcheck.internal.config.ClaimCheckBi
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.config.ClaimCheckOptionsConfig
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.Flyweight
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.HttpHeaderFW
-import io.aklivity.zilla.runtime.engine.EngineContext
-import io.aklivity.zilla.runtime.engine.binding.BindingHandler
-import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer
-import io.aklivity.zilla.runtime.engine.config.BindingConfig
-import org.agrona.DirectBuffer
-import org.agrona.MutableDirectBuffer
-import org.agrona.concurrent.UnsafeBuffer
-import org.agrona.collections.Long2ObjectHashMap
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.OctetsFW
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.String8FW
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.String16FW
@@ -26,6 +18,14 @@ import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpBe
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.HttpResetExFW
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.ResetFW
 import io.aklivity.zilla.runtime.binding.claimcheck.internal.types.stream.WindowFW
+import io.aklivity.zilla.runtime.engine.EngineContext
+import io.aklivity.zilla.runtime.engine.binding.BindingHandler
+import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer
+import io.aklivity.zilla.runtime.engine.config.BindingConfig
+import org.agrona.DirectBuffer
+import org.agrona.MutableDirectBuffer
+import org.agrona.concurrent.UnsafeBuffer
+import org.agrona.collections.Long2ObjectHashMap
 import io.minio.GetPresignedObjectUrlArgs
 import io.minio.MinioClient
 import io.minio.PutObjectArgs
@@ -36,6 +36,7 @@ import java.io.FileOutputStream
 import java.util.UUID
 import java.util.function.LongUnaryOperator
 import java.util.function.Predicate
+import java.lang.System as System
 
 class ClaimCheckProxyFactory(
     private val config: ClaimCheckConfiguration,
@@ -45,6 +46,7 @@ class ClaimCheckProxyFactory(
     private companion object {
         const val HTTP_TYPE_NAME = "http"
         const val CLAIMCHECK_TYPE_NAME = "claimcheck"
+        const val REQUEST_TIMEOUT_MS = 30000L // 30 seconds timeout for receiving data
 
         val HEADER_STATUS_NAME = String8FW(":status")
         val HEADER_METHOD_NAME = String8FW(":method")
@@ -54,30 +56,19 @@ class ClaimCheckProxyFactory(
         val HEADER_STATUS_VALUE_200 = String16FW("200")
         val HEADER_STATUS_VALUE_400 = String16FW("400")
         val HEADER_STATUS_VALUE_405 = String16FW("405")
+        val HEADER_STATUS_VALUE_408 = String16FW("408") // Request Timeout
         val HEADER_STATUS_VALUE_413 = String16FW("413")
         val HEADER_STATUS_VALUE_500 = String16FW("500")
         val EMPTY_EXTENSION = OctetsFW().wrap(UnsafeBuffer(ByteArray(0)), 0, 0)
 
-        lateinit var SUPPORTED_HTTP_METHOD: Predicate<HttpHeaderFW>
+        val SUPPORTED_HTTP_METHOD: Predicate<HttpHeaderFW> = Predicate { header ->
+            header.name().equals(HEADER_METHOD_NAME) &&
+                    (header.value().asString() == "POST" || header.value().asString() == "PUT")
+        }
 
         init {
             println("ClaimCheckProxyFactory: Initializing companion object")
             try {
-                val headerMethodPost = HttpHeaderFW.Builder()
-                    .wrap(UnsafeBuffer(ByteArray(512)), 0, 512)
-                    .name(":method")
-                    .value("POST")
-                    .build()
-
-                val headerMethodPut = HttpHeaderFW.Builder()
-                    .wrap(UnsafeBuffer(ByteArray(512)), 0, 512)
-                    .name(":method")
-                    .value("PUT")
-                    .build()
-
-                SUPPORTED_HTTP_METHOD = Predicate<HttpHeaderFW> { header ->
-                    headerMethodPost.equals(header) || headerMethodPut.equals(header)
-                }
                 println("ClaimCheckProxyFactory: Companion object initialized successfully")
             } catch (e: Exception) {
                 println("ClaimCheckProxyFactory: Error initializing companion object")
@@ -92,7 +83,6 @@ class ClaimCheckProxyFactory(
     private val supplyInitialId: LongUnaryOperator = LongUnaryOperator { value -> context.supplyInitialId(value) }
     private val supplyReplyId: LongUnaryOperator = LongUnaryOperator { value -> context.supplyReplyId(value) }
     private val httpTypeId: Int = context.supplyTypeId(HTTP_TYPE_NAME)
-    private val claimCheckTypeId: Int = context.supplyTypeId(CLAIMCHECK_TYPE_NAME)
     private val bindings = Long2ObjectHashMap<ClaimCheckBindingConfig>()
 
     private val beginRO = BeginFW()
@@ -129,6 +119,7 @@ class ClaimCheckProxyFactory(
         }
         println("ClaimCheckProxyFactory: Exiting attach")
     }
+
     fun detach(bindingId: Long) {
         println("ClaimCheckProxyFactory: Entering detach(bindingId=$bindingId)")
         try {
@@ -152,83 +143,76 @@ class ClaimCheckProxyFactory(
         length: Int,
         sender: MessageConsumer
     ): MessageConsumer? {
-        println("MIKE: Testing quicker reloads!!")
-        println("ClaimCheckProxyFactory: Entering newStream(msgTypeId=$msgTypeId, index=$index, length=$length)")
-        try {
-            if (msgTypeId != BeginFW.TYPE_ID) {
-                println("ClaimCheckProxyFactory: Invalid msgTypeId, expected BeginFW.TYPE_ID, returning null")
-                return null
-            }
+        if (msgTypeId != BeginFW.TYPE_ID) {
+            println("ClaimCheckProxyFactory: Unexpected msgTypeId=$msgTypeId, ignoring")
+            return null
+        }
 
-            val begin = beginRO.wrap(buffer, index, index + length)
-            val originId = begin.originId()
-            val routedId = begin.routedId()
-            val initialId = begin.streamId()
-            val authorization = begin.authorization()
-            val extension = begin.extension()
-            println("ClaimCheckProxyFactory: Processing BeginFW: originId=$originId, routedId=$routedId, initialId=$initialId, authorization=$authorization")
-//            println("ClaimCheckProxyFactory: Extension size=${extension.sizeof()}, content=${if (extension.sizeof() > 0) extension.buffer().getBytes(extension.offset(), extension.sizeof()).joinToString("") { "%02x".format(it) } else "empty"}")
+        val begin = beginRO.wrap(buffer, index, index + length)
 
-            val beginEx = if (extension.sizeof() > 0) {
-                val typeId = extension.buffer().getInt(extension.offset())
-                println("ClaimCheckProxyFactory: Extension typeId=$typeId, expected=$httpTypeId")
-                if (typeId == httpTypeId) {
-                    extension.get(httpBeginExRO::tryWrap)
-                } else {
-                    println("ClaimCheckProxyFactory: Unexpected extension typeId=$typeId, expected=$httpTypeId")
-                    null
-                }
-            } else {
-                println("ClaimCheckProxyFactory: Empty extension, returning null")
-                null
-            }
-            if (beginEx == null) {
-                println("ClaimCheckProxyFactory: Failed to wrap HTTP extension, returning null")
-                return null
-            }
+        val originId = begin.originId()
+        val routedId = begin.routedId()
+        val initialId = begin.streamId()
+        val sequence = begin.sequence()
+        val acknowledge = begin.acknowledge()
+        val maximum = begin.maximum()
+        val traceId = begin.traceId()
+        val authorization = begin.authorization()
+        val affinity = begin.affinity()
+        val extension = begin.extension()
 
-            println("ClaimCheckProxyFactory: Inspecting headers in beginEx")
-            beginEx.headers().forEach { header ->
-                println("ClaimCheckProxyFactory: Header: ${header.name().asString()}=${header.value().asString()}")
-            }
+        val correlationId = UUID.randomUUID().toString().substring(0, 8)
 
-            val binding = bindings[routedId]
-            if (binding == null) {
-                println("ClaimCheckProxyFactory: No binding found for routedId=$routedId, bindings available: ${bindings.keys}")
-                return null
-            }
-            println("ClaimCheckProxyFactory: Found binding for routedId=$routedId, bindingId=${binding.id}")
+        println(
+            "ClaimCheckProxyFactory[$correlationId]: BeginFW { " +
+                    "originId=$originId, routedId=$routedId, initialId=$initialId, " +
+                    "seq=$sequence, ack=$acknowledge, max=$maximum, " +
+                    "traceId=$traceId, auth=$authorization, affinity=$affinity, " +
+                    "ext.size=${extension.sizeof()} }"
+        )
 
-            var methodValid = false
-            beginEx.headers().forEach { header ->
-                if (HEADER_METHOD_NAME.equals(header.name()) && SUPPORTED_HTTP_METHOD.test(header)) {
-                    methodValid = true
-                    println("ClaimCheckProxyFactory: Valid HTTP method found: ${header.value().asString()}")
-                }
-            }
-            if (!methodValid) {
-                println("ClaimCheckProxyFactory: Invalid HTTP method, sending 405 reset")
-                doHttpReset(sender, originId, routedId, initialId, begin.sequence(), begin.acknowledge(), 0,
-                    begin.traceId(), HEADER_STATUS_VALUE_405)
-                return null
-            }
+        val binding = bindings[routedId]
+        if (binding == null) {
+            println("ClaimCheckProxyFactory[$correlationId]: No binding found for routedId=$routedId. Available=${bindings.keys}. Ignoring stream.")
+            return null
+        }
 
-            println("ClaimCheckProxyFactory: Attempting to resolve route with authorization=$authorization")
-            val route = binding.resolve(authorization, beginEx)
-            if (route == null) {
-                println("ClaimCheckProxyFactory: No route resolved, returning null. Expected :path=/claim")
-                return null
-            }
-            println("ClaimCheckProxyFactory: Route resolved, routeId=${route.id}")
+        val beginEx = extension.get(httpBeginExRO::tryWrap)
+        if (beginEx == null) {
+            println("ClaimCheckProxyFactory[$correlationId]: No HttpBeginExFW extension, ignoring stream (soft fail).")
+            return null
+        }
 
-            val resolved = route.with
-            if (resolved == null) {
-                println("ClaimCheckProxyFactory: No resolved config, returning null")
-                return null
+        val headersDump = buildString {
+            beginEx.headers().forEach { h ->
+                if (isNotEmpty()) append(", ")
+                append(h.name().asString()).append('=').append(h.value().asString())
             }
-            println("ClaimCheckProxyFactory: Resolved config found: ttl=${resolved.ttl}, maxPayloadSize=${resolved.maxPayloadSize}")
+        }
+        println("ClaimCheckProxyFactory[$correlationId]: Headers = [$headersDump]")
 
-            println("ClaimCheckProxyFactory: Creating HttpProxy with routedId=$routedId")
+        val methodOk = beginEx.headers().anyMatch(SUPPORTED_HTTP_METHOD)
+        if (!methodOk) {
+            println("ClaimCheckProxyFactory[$correlationId]: Unsupported or missing HTTP method. Resetting with 405.")
+            doHttpReset(sender, originId, routedId, initialId, sequence, acknowledge, maximum, traceId, HEADER_STATUS_VALUE_405)
+            return null
+        }
+
+        val route = binding.resolve(authorization, beginEx)
+        if (route == null) {
+            println("ClaimCheckProxyFactory[$correlationId]: Route resolution failed. Ignoring stream (soft fail). Headers=$headersDump auth=$authorization")
+            return null
+        }
+        println("ClaimCheckProxyFactory[$correlationId]: Route resolved, routeId=${route.id}")
+
+        val resolved = route.with
+        if (resolved == null) {
+            println("ClaimCheckProxyFactory[$correlationId]: Resolved config missing. Ignoring stream (soft fail).")
+            return null
+        }
+        println("ClaimCheckProxyFactory[$correlationId]: Resolved config ok (ttl=${resolved.ttl}, maxPayloadSize=${resolved.maxPayloadSize})")
+
+        return try {
             val httpProxy = HttpProxy(
                 http = sender,
                 originId = originId,
@@ -239,12 +223,13 @@ class ClaimCheckProxyFactory(
                 binding = binding
             )
             val result = httpProxy.newStream()
-            println("ClaimCheckProxyFactory: Exiting newStream, returning new HttpProxy stream")
-            return result
+            println("ClaimCheckProxyFactory[$correlationId]: newStream created successfully.")
+            result
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in newStream")
+            println("ClaimCheckProxyFactory[$correlationId]: ERROR in newStream (originId=$originId, routedId=$routedId, initialId=$initialId, traceId=$traceId): ${e.message}")
             e.printStackTrace()
-            return null
+            doHttpReset(sender, originId, routedId, initialId, sequence, acknowledge, maximum, traceId, HEADER_STATUS_VALUE_500)
+            null
         }
     }
 
@@ -258,17 +243,40 @@ class ClaimCheckProxyFactory(
         private val binding: ClaimCheckBindingConfig
     ) {
         private val replyId: Long = supplyReplyId.applyAsLong(initialId)
-        private val delegate = ClaimCheckProxy(originId, routedId, this, resolved, binding)
         private var state: Int = 0
-        var initialSeq: Long = 0
-        var initialAck: Long = 0
-        var initialMax: Int = 0
+        private var initialSeq: Long = 0
+        private var initialAck: Long = 0
+        private var initialMax: Int = 0
         private var replySeq: Long = 0
-        var replyAck: Long = 0
-        var replyMax: Int = 0
+        private var replyAck: Long = 0
+        private var replyMax: Int = 0
+        private val chunks = mutableListOf<ByteArray>()
+        private var totalSize: Long = 0
+        private var tempFile: File? = null
+        private var tempFileOutputStream: FileOutputStream? = null
+        private val minioClient: MinioClient
+        private val options: ClaimCheckOptionsConfig
+        private var lastActivityTime: Long = 0
+        private var expectedContentLength: Long? = null
+
+        init {
+            println("HttpProxy: Entering constructor for initialId=$initialId")
+            try {
+                options = binding.options
+                minioClient = MinioClient.builder()
+                    .endpoint(options.endpoint)
+                    .credentials(options.accessKey, options.secretKey)
+                    .build()
+                println("HttpProxy: MinioClient initialized successfully")
+            } catch (e: Exception) {
+                println("HttpProxy: Error initializing HttpProxy for initialId=$initialId")
+                e.printStackTrace()
+                throw e
+            }
+            println("HttpProxy: Exiting constructor")
+        }
 
         fun newStream(): MessageConsumer {
-            println("MIKE: Testing quicker reloads in HttpProxy!!")
             println("HttpProxy: Entering newStream(initialId=$initialId)")
             try {
                 val result = MessageConsumer { t, b, i, l ->
@@ -291,6 +299,14 @@ class ClaimCheckProxyFactory(
         ) {
             println("HttpProxy: Entering onHttpMessage(msgTypeId=$msgTypeId, initialId=$initialId)")
             try {
+                // Check for timeout
+                if (msgTypeId != WindowFW.TYPE_ID && lastActivityTime > 0 && System.currentTimeMillis() - lastActivityTime > REQUEST_TIMEOUT_MS) {
+                    println("HttpProxy: Request timeout after ${REQUEST_TIMEOUT_MS}ms, sending 408")
+                    doHttpReset(windowRO.wrap(buffer, index, index + length).traceId(), HEADER_STATUS_VALUE_408)
+                    cleanupTempFile()
+                    return
+                }
+
                 when (msgTypeId) {
                     BeginFW.TYPE_ID -> {
                         val begin = beginRO.wrap(buffer, index, index + length)
@@ -316,11 +332,16 @@ class ClaimCheckProxyFactory(
                         val window = windowRO.wrap(buffer, index, index + length)
                         onHttpWindow(window)
                     }
+                    FlushFW.TYPE_ID -> {
+                        val flush = flushRO.wrap(buffer, index, index + length)
+                        onHttpFlush(flush)
+                    }
                 }
                 println("HttpProxy: Exiting onHttpMessage for msgTypeId=$msgTypeId")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpMessage for msgTypeId=$msgTypeId")
+                println("HttpProxy: Error in onHttpMessage for msgTypeId=$msgTypeId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(windowRO.wrap(buffer, index, index + length).traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
@@ -331,17 +352,20 @@ class ClaimCheckProxyFactory(
                 val acknowledge = begin.acknowledge()
                 val traceId = begin.traceId()
                 val authorization = begin.authorization()
-                val affinity = begin.affinity()
+                val extension = begin.extension()
 
                 initialSeq = sequence
                 initialAck = acknowledge
                 state = ClaimCheckState.openingInitial(state)
-                println("HttpProxy: Calling doClaimCheckBegin with traceId=$traceId")
-                delegate.doClaimCheckBegin(traceId, authorization, affinity)
+                lastActivityTime = System.currentTimeMillis()
+                initialMax = resolved.maxPayloadSize.toInt().coerceAtLeast(8192)
+                doHttpWindow(authorization, traceId, 0L, 0, 0)
+                println("HttpProxy: Initial window sent with initialMax=$initialMax")
                 println("HttpProxy: Exiting onHttpBegin")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpBegin for initialId=$initialId")
+                println("HttpProxy: Error in onHttpBegin for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(begin.traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
@@ -352,18 +376,54 @@ class ClaimCheckProxyFactory(
                 val acknowledge = data.acknowledge()
                 val traceId = data.traceId()
                 val authorization = data.authorization()
-                val budgetId = data.budgetId()
                 val reserved = data.reserved()
-                val flags = data.flags()
                 val payload = data.payload()
 
-                initialSeq = sequence
-                println("HttpProxy: Calling doClaimCheckData with traceId=$traceId, reserved=$reserved")
-                delegate.doClaimCheckData(traceId, authorization, budgetId, reserved, flags, payload)
+                initialSeq = sequence + reserved
+                lastActivityTime = System.currentTimeMillis()
+
+                val size = payload.sizeof()
+                totalSize += size
+                println("HttpProxy: Received DataFW: size=$size, totalSize=$totalSize, seq=$sequence, ack=$acknowledge, reserved=$reserved")
+
+                if (totalSize > resolved.maxPayloadSize) {
+                    println("HttpProxy: Total size $totalSize exceeds maxPayloadSize=${resolved.maxPayloadSize}, sending 413")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_413)
+                    cleanupTempFile()
+                    return
+                }
+
+                if (totalSize <= resolved.inMemoryThreshold && tempFile == null) {
+                    val bytes = ByteArray(size)
+                    payload.buffer().getBytes(payload.offset(), bytes)
+                    chunks.add(bytes)
+                    println("HttpProxy: Stored payload in memory, chunk count=${chunks.size}")
+                } else {
+                    if (tempFile == null) {
+                        println("HttpProxy: Creating temp file as totalSize exceeds inMemoryThreshold")
+                        tempFile = File.createTempFile("claimcheck", ".tmp")
+                        tempFileOutputStream = FileOutputStream(tempFile!!)
+                        chunks.forEach { tempFileOutputStream!!.write(it) }
+                        chunks.clear()
+                        println("HttpProxy: Moved chunks to temp file")
+                    }
+                    val bytes = ByteArray(size)
+                    payload.buffer().getBytes(payload.offset(), bytes, 0, size)
+                    tempFileOutputStream!!.write(bytes)
+                    println("HttpProxy: Wrote payload to temp file")
+                }
+
+                // Update window to allow more data
+                initialAck = initialSeq
+                initialMax = resolved.maxPayloadSize.toInt().coerceAtLeast(8192)
+                doHttpWindow(authorization, traceId, 0L, reserved, 0)
+                println("HttpProxy: Window updated: initialAck=$initialAck, initialMax=$initialMax")
                 println("HttpProxy: Exiting onHttpData")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpData for initialId=$initialId")
+                println("HttpProxy: Error in onHttpData for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(data.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupTempFile()
             }
         }
 
@@ -377,12 +437,81 @@ class ClaimCheckProxyFactory(
 
                 initialSeq = sequence
                 state = ClaimCheckState.closeInitial(state)
-                println("HttpProxy: Calling doClaimCheckEnd with traceId=$traceId")
-                delegate.doClaimCheckEnd(traceId, authorization)
+                lastActivityTime = System.currentTimeMillis()
+
+                // Validate total size against expected Content-Length
+                if (expectedContentLength != null && totalSize != expectedContentLength) {
+                    println("HttpProxy: Total size $totalSize does not match Content-Length $expectedContentLength, sending 400")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_400)
+                    cleanupTempFile()
+                    return
+                }
+
+                val claimKey = UUID.randomUUID().toString()
+                println("HttpProxy: Generated claimKey=$claimKey")
+                try {
+                    val inputStream = if (tempFile != null) {
+                        println("HttpProxy: Closing temp file output stream")
+                        tempFileOutputStream?.close()
+                        tempFile!!.inputStream()
+                    } else {
+                        ByteArrayInputStream(chunks.concatToByteArray())
+                    }
+                    println("HttpProxy: Uploading to MinIO with claimKey=$claimKey")
+                    minioClient.putObject(
+                        PutObjectArgs.builder()
+                            .bucket(options.bucket)
+                            .`object`(claimKey)
+                            .stream(inputStream, totalSize, -1)
+                            .build()
+                    )
+                    println("HttpProxy: MinIO upload successful")
+                    val presignedUrl = if (resolved.presigned) {
+                        println("HttpProxy: Generating presigned URL")
+                        minioClient.getPresignedObjectUrl(
+                            GetPresignedObjectUrlArgs.builder()
+                                .method(Method.GET)
+                                .bucket(options.bucket)
+                                .`object`(claimKey)
+                                .expiry(resolved.ttl.toInt())
+                                .build()
+                        )
+                    } else null
+                    println("HttpProxy: Building HTTP response headers")
+                    val httpBeginEx = httpBeginExRW.wrap(extBuffer, 0, extBuffer.capacity())
+                        .typeId(httpTypeId)
+                        .headersItem { h -> h.name(HEADER_STATUS_NAME).value(HEADER_STATUS_VALUE_200) }
+                        .headersItem { h -> h.name(HEADER_CONTENT_LENGTH_NAME).value("0") }
+                        .apply {
+                            resolved.headers.forEach { (name, value) ->
+                                val replaced = value.replace("uuid", claimKey)
+                                headersItem { h -> h.name(String8FW(name)).value(String16FW(replaced)) }
+                                println("HttpProxy: Added header $name=$replaced")
+                            }
+                            if (resolved.headers.isEmpty() || !resolved.headers.containsKey("X-Claim")) {
+                                val value = presignedUrl ?: claimKey
+                                headersItem { h -> h.name(HEADER_X_CLAIM_NAME).value(String16FW(value)) }
+                                println("HttpProxy: Added X-Claim header with value=$value")
+                            }
+                        }
+                        .build()
+                    println("HttpProxy: Sending HTTP Begin with traceId=$traceId")
+                    doHttpBegin(traceId, authorization, 0L, httpBeginEx)
+                    println("HttpProxy: Sending HTTP End with traceId=$traceId")
+                    doHttpEnd(traceId, authorization)
+                } catch (ex: Exception) {
+                    println("HttpProxy: Error during MinIO operations or HTTP response: ${ex.message}")
+                    ex.printStackTrace()
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                } finally {
+                    println("HttpProxy: Cleaning up temp file")
+                    cleanupTempFile()
+                }
                 println("HttpProxy: Exiting onHttpEnd")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpEnd for initialId=$initialId")
+                println("HttpProxy: Error in onHttpEnd for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(end.traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
@@ -396,12 +525,14 @@ class ClaimCheckProxyFactory(
 
                 initialSeq = sequence
                 state = ClaimCheckState.closeInitial(state)
-                println("HttpProxy: Calling doClaimCheckAbort with traceId=$traceId")
-                delegate.doClaimCheckAbort(traceId, authorization)
+                println("HttpProxy: Cleaning up temp file in abort")
+                cleanupTempFile()
+                doHttpAbort(traceId, authorization)
                 println("HttpProxy: Exiting onHttpAbort")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpAbort for initialId=$initialId")
+                println("HttpProxy: Error in onHttpAbort for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(abort.traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
@@ -416,12 +547,13 @@ class ClaimCheckProxyFactory(
                 replyAck = acknowledge
                 replyMax = maximum
                 state = ClaimCheckState.closeReply(state)
-                println("HttpProxy: Calling doClaimCheckReset with traceId=$traceId")
-                delegate.doClaimCheckReset(traceId)
+                println("HttpProxy: Cleaning up temp file in reset")
+                cleanupTempFile()
                 println("HttpProxy: Exiting onHttpReset")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpReset for initialId=$initialId")
+                println("HttpProxy: Error in onHttpReset for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(reset.traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
@@ -440,88 +572,110 @@ class ClaimCheckProxyFactory(
                 replyAck = acknowledge
                 replyMax = maximum
                 state = ClaimCheckState.openReply(state)
-                println("HttpProxy: Calling doClaimCheckWindow with traceId=$traceId")
-                delegate.doClaimCheckWindow(traceId, authorization, budgetId, padding, capabilities)
+                println("HttpProxy: Window received: seq=$sequence, ack=$acknowledge, max=$maximum, budgetId=$budgetId, padding=$padding, capabilities=$capabilities")
                 println("HttpProxy: Exiting onHttpWindow")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpWindow for initialId=$initialId")
+                println("HttpProxy: Error in onHttpWindow for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(window.traceId(), HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpBegin(traceId: Long, authorization: Long, affinity: Long, extension: Flyweight) {
+        private fun onHttpFlush(flush: FlushFW) {
+            println("HttpProxy: Entering onHttpFlush(initialId=$initialId)")
+            try {
+                val sequence = flush.sequence()
+                val acknowledge = flush.acknowledge()
+                val traceId = flush.traceId()
+                val authorization = flush.authorization()
+                val budgetId = flush.budgetId()
+                val reserved = flush.reserved()
+
+                replySeq = sequence
+                lastActivityTime = System.currentTimeMillis()
+                doHttpFlush(traceId, authorization, budgetId, reserved)
+                println("HttpProxy: Exiting onHttpFlush")
+            } catch (e: Exception) {
+                println("HttpProxy: Error in onHttpFlush for initialId=$initialId: ${e.message}")
+                e.printStackTrace()
+                doHttpReset(flush.traceId(), HEADER_STATUS_VALUE_500)
+            }
+        }
+
+        private fun doHttpBegin(traceId: Long, authorization: Long, affinity: Long, extension: Flyweight) {
             println("HttpProxy: Entering doHttpBegin(traceId=$traceId, initialId=$initialId)")
             try {
-                replySeq = delegate.replySeq
-                replyAck = delegate.replyAck
-                replyMax = delegate.replyMax
                 state = ClaimCheckState.openingReply(state)
-                println("HttpProxy: Sending HTTP Begin with replyId=$replyId")
                 doBegin(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, affinity, extension)
+                println("HttpProxy: HTTP Begin sent with replyId=$replyId")
                 println("HttpProxy: Exiting doHttpBegin")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpBegin for traceId=$traceId")
+                println("HttpProxy: Error in doHttpBegin for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: OctetsFW?) {
+        private fun doHttpData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: OctetsFW?) {
             println("HttpProxy: Entering doHttpData(traceId=$traceId, reserved=$reserved, initialId=$initialId)")
             try {
                 doData(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, budgetId, flags, reserved, payload)
                 replySeq += reserved
-                println("HttpProxy: Exiting doHttpData, updated replySeq=$replySeq")
+                println("HttpProxy: HTTP Data sent, updated replySeq=$replySeq")
+                println("HttpProxy: Exiting doHttpData")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpData for traceId=$traceId")
+                println("HttpProxy: Error in doHttpData for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpFlush(traceId: Long, authorization: Long, budgetId: Long, reserved: Int) {
+        private fun doHttpFlush(traceId: Long, authorization: Long, budgetId: Long, reserved: Int) {
             println("HttpProxy: Entering doHttpFlush(traceId=$traceId, initialId=$initialId)")
             try {
-                replySeq = delegate.replySeq
                 doFlush(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, budgetId, reserved)
+                println("HttpProxy: HTTP Flush sent")
                 println("HttpProxy: Exiting doHttpFlush")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpFlush for traceId=$traceId")
+                println("HttpProxy: Error in doHttpFlush for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpEnd(traceId: Long, authorization: Long) {
+        private fun doHttpEnd(traceId: Long, authorization: Long) {
             println("HttpProxy: Entering doHttpEnd(traceId=$traceId, initialId=$initialId)")
             try {
                 if (!ClaimCheckState.replyClosed(state)) {
-                    replySeq = delegate.replySeq
                     state = ClaimCheckState.closeReply(state)
                     doEnd(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization)
                     println("HttpProxy: HTTP End sent with replyId=$replyId")
                 }
                 println("HttpProxy: Exiting doHttpEnd")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpEnd for traceId=$traceId")
+                println("HttpProxy: Error in doHttpEnd for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpAbort(traceId: Long, authorization: Long) {
+        private fun doHttpAbort(traceId: Long, authorization: Long) {
             println("HttpProxy: Entering doHttpAbort(traceId=$traceId, initialId=$initialId)")
             try {
                 if (!ClaimCheckState.replyClosed(state)) {
-                    replySeq = delegate.replySeq
                     state = ClaimCheckState.closeReply(state)
                     doAbort(http, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization)
                     println("HttpProxy: HTTP Abort sent with replyId=$replyId")
                 }
                 println("HttpProxy: Exiting doHttpAbort")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpAbort for traceId=$traceId")
+                println("HttpProxy: Error in doHttpAbort for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
-        fun doHttpReset(traceId: Long, status: String16FW) {
+        private fun doHttpReset(traceId: Long, status: String16FW) {
             println("HttpProxy: Entering doHttpReset(traceId=$traceId, status=${status.asString()}, initialId=$initialId)")
             try {
                 if (!ClaimCheckState.initialClosed(state)) {
@@ -536,458 +690,45 @@ class ClaimCheckProxyFactory(
                 }
                 println("HttpProxy: Exiting doHttpReset")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpReset for traceId=$traceId")
+                println("HttpProxy: Error in doHttpReset for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
             }
         }
 
-        fun doHttpWindow(authorization: Long, traceId: Long, budgetId: Long, padding: Int, capabilities: Int) {
+        private fun doHttpWindow(authorization: Long, traceId: Long, budgetId: Long, padding: Int, capabilities: Int) {
             println("HttpProxy: Entering doHttpWindow(traceId=$traceId, initialId=$initialId)")
             try {
-                initialAck = delegate.initialAck
-                initialMax = delegate.initialMax
                 doWindow(http, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization, budgetId, padding, capabilities)
                 println("HttpProxy: HTTP Window sent with initialAck=$initialAck, initialMax=$initialMax")
                 println("HttpProxy: Exiting doHttpWindow")
             } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpWindow for traceId=$traceId")
+                println("HttpProxy: Error in doHttpWindow for traceId=$traceId: ${e.message}")
                 e.printStackTrace()
-            }
-        }
-    }
-
-    private inner class ClaimCheckProxy(
-        private val originId: Long,
-        private val routedId: Long,
-        private val delegate: HttpProxy,
-        private val resolved: ClaimCheckWithConfig,
-        private val binding: ClaimCheckBindingConfig
-    ) {
-        private val options: ClaimCheckOptionsConfig
-        private val initialId: Long = supplyInitialId.applyAsLong(routedId)
-        private val replyId: Long = supplyReplyId.applyAsLong(initialId)
-        private var filesystem: MessageConsumer? = null
-        private var state: Int = 0
-        private var initialSeq: Long = 0
-        var initialAck: Long = 0
-        var initialMax: Int = 0
-        var replySeq: Long = 0
-        var replyAck: Long = 0
-        var replyMax: Int = 0
-        private val chunks = mutableListOf<ByteArray>()
-        private var totalSize: Long = 0
-        private var tempFile: File? = null
-        private var tempFileOutputStream: FileOutputStream? = null
-        private val minioClient: MinioClient
-
-        init {
-            println("ClaimCheckProxy: Entering constructor for initialId=$initialId, routedId=$routedId")
-            try {
-                options = binding.options
-                println("ClaimCheckProxy: Binding options: $options")
-                minioClient = MinioClient.builder()
-                    .endpoint(options.endpoint)
-                    .credentials(options.accessKey, options.secretKey)
-                    .build()
-                println("ClaimCheckProxy: MinioClient initialized successfully")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error initializing ClaimCheckProxy for initialId=$initialId")
-                e.printStackTrace()
-                throw e
-            }
-            println("ClaimCheckProxy: Exiting constructor")
-        }
-        fun doClaimCheckBegin(traceId: Long, authorization: Long, affinity: Long) {
-            println("ClaimCheckProxy: Entering doClaimCheckBegin(traceId=$traceId, initialId=$initialId)")
-            try {
-                initialSeq = delegate.initialSeq
-                initialAck = delegate.initialAck
-                initialMax = delegate.initialMax
-                state = ClaimCheckState.openingInitial(state)
-                filesystem = newClaimCheckStream(this::onClaimCheckMessage, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization, affinity)
-                println("ClaimCheckProxy: Filesystem stream created, calling doClaimCheckWindow")
-                doClaimCheckWindow(traceId, authorization, 0L, resolved.inMemoryThreshold.toInt(), 0)
-                println("ClaimCheckProxy: Exiting doClaimCheckBegin")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckBegin for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        fun doClaimCheckData(traceId: Long, authorization: Long, budgetId: Long, reserved: Int, flags: Int, payload: OctetsFW) {
-            println("ClaimCheckProxy: Entering doClaimCheckData(traceId=$traceId, reserved=$reserved, initialId=$initialId)")
-            try {
-                val size = payload.sizeof()
-                totalSize += size
-                println("ClaimCheckProxy: Payload size=$size, totalSize=$totalSize")
-                if (totalSize > resolved.maxPayloadSize) {
-                    println("ClaimCheckProxy: Payload size exceeds maxPayloadSize=${resolved.maxPayloadSize}, sending 413")
-                    delegate.doHttpReset(traceId, HEADER_STATUS_VALUE_413)
-                    doClaimCheckAbort(traceId, authorization)
-                    return
-                }
-                if (totalSize <= resolved.inMemoryThreshold && tempFile == null) {
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes)
-                    chunks.add(bytes)
-                    println("ClaimCheckProxy: Stored payload in memory, chunk count=${chunks.size}")
-                } else {
-                    if (tempFile == null) {
-                        println("ClaimCheckProxy: Creating temp file as totalSize exceeds inMemoryThreshold")
-                        tempFile = File.createTempFile("claimcheck", ".tmp")
-                        tempFileOutputStream = FileOutputStream(tempFile!!)
-                        chunks.forEach { tempFileOutputStream!!.write(it) }
-                        chunks.clear()
-                        println("ClaimCheckProxy: Moved chunks to temp file")
-                    }
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes, 0, size)
-                    tempFileOutputStream!!.write(bytes)
-                    println("ClaimCheckProxy: Wrote payload to temp file")
-                }
-                doData(filesystem!!, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization, budgetId, flags, reserved, payload)
-                initialSeq += reserved
-                println("ClaimCheckProxy: Sent data, updated initialSeq=$initialSeq")
-                doClaimCheckWindow(traceId, authorization, budgetId, reserved, 0)
-                println("ClaimCheckProxy: Exiting doClaimCheckData")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckData for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        fun doClaimCheckEnd(traceId: Long, authorization: Long) {
-            println("ClaimCheckProxy: Entering doClaimCheckEnd(traceId=$traceId, initialId=$initialId)")
-            try {
-                if (!ClaimCheckState.initialClosed(state)) {
-                    initialSeq = delegate.initialSeq
-                    state = ClaimCheckState.closeInitial(state)
-                    val claimKey = UUID.randomUUID().toString()
-                    println("ClaimCheckProxy: Generated claimKey=$claimKey")
-                    try {
-                        val inputStream = if (tempFile != null) {
-                            println("ClaimCheckProxy: Closing temp file output stream")
-                            tempFileOutputStream?.close()
-                            tempFile!!.inputStream()
-                        } else {
-                            ByteArrayInputStream(chunks.concatToByteArray())
-                        }
-                        println("ClaimCheckProxy: Uploading to MinIO with claimKey=$claimKey")
-                        minioClient.putObject(
-                            PutObjectArgs.builder()
-                                .bucket(options.bucket)
-                                .`object`(claimKey)
-                                .stream(inputStream, totalSize, -1)
-                                .build()
-                        )
-                        println("ClaimCheckProxy: MinIO upload successful")
-                        val presignedUrl = if (resolved.presigned) {
-                            println("ClaimCheckProxy: Generating presigned URL")
-                            minioClient.getPresignedObjectUrl(
-                                GetPresignedObjectUrlArgs.builder()
-                                    .method(Method.GET)
-                                    .bucket(options.bucket)
-                                    .`object`(claimKey)
-                                    .expiry(resolved.ttl.toInt())
-                                    .build()
-                            )
-                        } else null
-                        println("ClaimCheckProxy: Building HTTP response headers")
-                        val httpBeginEx = httpBeginExRW.wrap(extBuffer, 0, extBuffer.capacity())
-                            .typeId(httpTypeId)
-                            .headersItem { h -> h.name(HEADER_STATUS_NAME).value(HEADER_STATUS_VALUE_200) }
-                            .headersItem { h -> h.name(HEADER_CONTENT_LENGTH_NAME).value("0") }
-                            .apply {
-                                resolved.headers.forEach { (name, value) ->
-                                    val replaced = value.replace("uuid", claimKey)
-                                    headersItem { h -> h.name(String8FW(name)).value(String16FW(replaced)) }
-                                    println("ClaimCheckProxy: Added header $name=$replaced")
-                                }
-                                if (resolved.headers.isEmpty() || !resolved.headers.containsKey("X-Claim")) {
-                                    val value = presignedUrl ?: claimKey
-                                    headersItem { h -> h.name(HEADER_X_CLAIM_NAME).value(String16FW(value)) }
-                                    println("ClaimCheckProxy: Added X-Claim header with value=$value")
-                                }
-                            }
-                            .build()
-                        println("ClaimCheckProxy: Sending HTTP Begin with traceId=$traceId")
-                        delegate.doHttpBegin(traceId, authorization, 0L, httpBeginEx)
-                        println("ClaimCheckProxy: Sending HTTP End with traceId=$traceId")
-                        delegate.doHttpEnd(traceId, authorization)
-                    } catch (ex: Exception) {
-                        println("ClaimCheckProxy: Error during MinIO operations or HTTP response")
-                        ex.printStackTrace()
-                        delegate.doHttpReset(traceId, HEADER_STATUS_VALUE_500)
-                    } finally {
-                        println("ClaimCheckProxy: Cleaning up temp file")
-                        cleanupTempFile()
-                    }
-                    println("ClaimCheckProxy: Sending ClaimCheck End with initialId=$initialId")
-                    doEnd(filesystem!!, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization)
-                }
-                println("ClaimCheckProxy: Exiting doClaimCheckEnd")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckEnd for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        fun doClaimCheckAbort(traceId: Long, authorization: Long) {
-            println("ClaimCheckProxy: Entering doClaimCheckAbort(traceId=$traceId, initialId=$initialId)")
-            try {
-                if (!ClaimCheckState.initialClosed(state)) {
-                    initialSeq = delegate.initialSeq
-                    state = ClaimCheckState.closeInitial(state)
-                    println("ClaimCheckProxy: Cleaning up temp file in abort")
-                    cleanupTempFile()
-                    doAbort(filesystem!!, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization)
-                    println("ClaimCheckProxy: ClaimCheck Abort sent")
-                }
-                println("ClaimCheckProxy: Exiting doClaimCheckAbort")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckAbort for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        fun doClaimCheckReset(traceId: Long) {
-            println("ClaimCheckProxy: Entering doClaimCheckReset(traceId=$traceId, initialId=$initialId)")
-            try {
-                if (!ClaimCheckState.replyClosed(state)) {
-                    state = ClaimCheckState.closeReply(state)
-                    println("ClaimCheckProxy: Cleaning up temp file in reset")
-                    cleanupTempFile()
-                    doReset(filesystem!!, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, EMPTY_EXTENSION as HttpResetExFW?)
-                    println("ClaimCheckProxy: ClaimCheck Reset sent")
-                }
-                println("ClaimCheckProxy: Exiting doClaimCheckReset")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckReset for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        fun doClaimCheckWindow(traceId: Long, authorization: Long, budgetId: Long, padding: Int, capabilities: Int) {
-            println("ClaimCheckProxy: Entering doClaimCheckWindow(traceId=$traceId, initialId=$initialId)")
-            try {
-                replyAck = delegate.replyAck
-                replyMax = delegate.replyMax
-                doWindow(filesystem!!, originId, routedId, replyId, replySeq, replyAck, replyMax, traceId, authorization, budgetId, padding, capabilities)
-                println("ClaimCheckProxy: ClaimCheck Window sent with replyAck=$replyAck, replyMax=$replyMax")
-                println("ClaimCheckProxy: Exiting doClaimCheckWindow")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in doClaimCheckWindow for traceId=$traceId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckMessage(
-            msgTypeId: Int,
-            buffer: DirectBuffer,
-            index: Int,
-            length: Int
-        ) {
-            println("ClaimCheckProxy: Entering onClaimCheckMessage(msgTypeId=$msgTypeId, initialId=$initialId)")
-            try {
-                when (msgTypeId) {
-                    BeginFW.TYPE_ID -> {
-                        val begin = beginRO.wrap(buffer, index, index + length)
-                        onClaimCheckBegin(begin)
-                    }
-                    DataFW.TYPE_ID -> {
-                        val data = dataRO.wrap(buffer, index, index + length)
-                        onClaimCheckData(data)
-                    }
-                    EndFW.TYPE_ID -> {
-                        val end = endRO.wrap(buffer, index, index + length)
-                        onClaimCheckEnd(end)
-                    }
-                    AbortFW.TYPE_ID -> {
-                        val abort = abortRO.wrap(buffer, index, index + length)
-                        onClaimCheckAbort(abort)
-                    }
-                    FlushFW.TYPE_ID -> {
-                        val flush = flushRO.wrap(buffer, index, index + length)
-                        onClaimCheckFlush(flush)
-                    }
-                    WindowFW.TYPE_ID -> {
-                        val window = windowRO.wrap(buffer, index, index + length)
-                        onClaimCheckWindow(window)
-                    }
-                    ResetFW.TYPE_ID -> {
-                        val reset = resetRO.wrap(buffer, index, index + length)
-                        onClaimCheckReset(reset)
-                    }
-                }
-                println("ClaimCheckProxy: Exiting onClaimCheckMessage for msgTypeId=$msgTypeId")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckMessage for msgTypeId=$msgTypeId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckBegin(begin: BeginFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckBegin(initialId=$initialId)")
-            try {
-                val sequence = begin.sequence()
-                val acknowledge = begin.acknowledge()
-                val traceId = begin.traceId()
-                val authorization = begin.authorization()
-                val affinity = begin.affinity()
-
-                replySeq = sequence
-                replyAck = acknowledge
-                state = ClaimCheckState.openingReply(state)
-                println("ClaimCheckProxy: Sending HTTP Begin with traceId=$traceId")
-                delegate.doHttpBegin(traceId, authorization, affinity, EMPTY_EXTENSION)
-                println("ClaimCheckProxy: Exiting onClaimCheckBegin")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckBegin for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckData(data: DataFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckData(initialId=$initialId)")
-            try {
-                val sequence = data.sequence()
-                val acknowledge = data.acknowledge()
-                val traceId = data.traceId()
-                val authorization = data.authorization()
-                val budgetId = data.budgetId()
-                val reserved = data.reserved()
-                val flags = data.flags()
-                val payload = data.payload()
-
-                replySeq = sequence + reserved
-                if (replySeq > replyAck + replyMax) {
-                    println("ClaimCheckProxy: Reply sequence exceeded, sending reset")
-                    doClaimCheckReset(traceId)
-                    delegate.doHttpAbort(traceId, authorization)
-                } else {
-                    println("ClaimCheckProxy: Sending HTTP Data with traceId=$traceId, reserved=$reserved")
-                    delegate.doHttpData(traceId, authorization, budgetId, reserved, flags, payload)
-                }
-                println("ClaimCheckProxy: Exiting onClaimCheckData")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckData for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckEnd(end: EndFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckEnd(initialId=$initialId)")
-            try {
-                val sequence = end.sequence()
-                val acknowledge = end.acknowledge()
-                val traceId = end.traceId()
-                val authorization = end.authorization()
-
-                replySeq = sequence
-                state = ClaimCheckState.closeReply(state)
-                println("ClaimCheckProxy: Sending HTTP End with traceId=$traceId")
-                delegate.doHttpEnd(traceId, authorization)
-                println("ClaimCheckProxy: Exiting onClaimCheckEnd")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckEnd for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckFlush(flush: FlushFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckFlush(initialId=$initialId)")
-            try {
-                val sequence = flush.sequence()
-                val acknowledge = flush.acknowledge()
-                val traceId = flush.traceId()
-                val authorization = flush.authorization()
-                val budgetId = flush.budgetId()
-                val reserved = flush.reserved()
-
-                replySeq = sequence
-                println("ClaimCheckProxy: Sending HTTP Flush with traceId=$traceId")
-                delegate.doHttpFlush(traceId, authorization, budgetId, reserved)
-                println("ClaimCheckProxy: Exiting onClaimCheckFlush")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckFlush for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckAbort(abort: AbortFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckAbort(initialId=$initialId)")
-            try {
-                val sequence = abort.sequence()
-                val acknowledge = abort.acknowledge()
-                val traceId = abort.traceId()
-                val authorization = abort.authorization()
-
-                replySeq = sequence
-                state = ClaimCheckState.closeReply(state)
-                println("ClaimCheckProxy: Sending HTTP Abort with traceId=$traceId")
-                delegate.doHttpAbort(traceId, authorization)
-                println("ClaimCheckProxy: Exiting onClaimCheckAbort")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckAbort for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckWindow(window: WindowFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckWindow(initialId=$initialId)")
-            try {
-                val sequence = window.sequence()
-                val acknowledge = window.acknowledge()
-                val maximum = window.maximum()
-                val traceId = window.traceId()
-                val authorization = window.authorization()
-                val budgetId = window.budgetId()
-                val padding = window.padding()
-                val capabilities = window.capabilities()
-
-                initialAck = acknowledge
-                initialMax = maximum
-                state = ClaimCheckState.openInitial(state)
-                println("ClaimCheckProxy: Sending HTTP Window with traceId=$traceId")
-                delegate.doHttpWindow(authorization, traceId, budgetId, padding, capabilities)
-                println("ClaimCheckProxy: Exiting onClaimCheckWindow")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckWindow for initialId=$initialId")
-                e.printStackTrace()
-            }
-        }
-
-        private fun onClaimCheckReset(reset: ResetFW) {
-            println("ClaimCheckProxy: Entering onClaimCheckReset(initialId=$initialId)")
-            try {
-                val traceId = reset.traceId()
-                println("ClaimCheckProxy: Sending HTTP Reset with status 400, traceId=$traceId")
-                delegate.doHttpReset(traceId, HEADER_STATUS_VALUE_400)
-                println("ClaimCheckProxy: Exiting onClaimCheckReset")
-            } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in onClaimCheckReset for initialId=$initialId")
-                e.printStackTrace()
+                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
             }
         }
 
         private fun cleanupTempFile() {
-            println("ClaimCheckProxy: Entering cleanupTempFile(initialId=$initialId)")
+            println("HttpProxy: Entering cleanupTempFile(initialId=$initialId)")
             try {
                 tempFileOutputStream?.close()
                 tempFile?.let { if (it.exists()) it.delete() }
-                println("ClaimCheckProxy: Temp file cleaned up successfully")
+                chunks.clear()
+                totalSize = 0
+                expectedContentLength = null
+                println("HttpProxy: Temp file cleaned up successfully")
             } catch (e: Exception) {
-                println("ClaimCheckProxy: Error cleaning up temp file")
+                println("HttpProxy: Error cleaning up temp file: ${e.message}")
                 e.printStackTrace()
             } finally {
                 tempFile = null
                 tempFileOutputStream = null
-                println("ClaimCheckProxy: Exiting cleanupTempFile")
+                println("HttpProxy: Exiting cleanupTempFile")
             }
         }
 
         private fun List<ByteArray>.concatToByteArray(): ByteArray {
-            println("ClaimCheckProxy: Entering concatToByteArray(initialId=$initialId)")
+            println("HttpProxy: Entering concatToByteArray(initialId=$initialId)")
             try {
                 val total = sumOf { it.size }
                 val out = ByteArray(total)
@@ -996,10 +737,10 @@ class ClaimCheckProxyFactory(
                     System.arraycopy(b, 0, out, off, b.size)
                     off += b.size
                 }
-                println("ClaimCheckProxy: Exiting concatToByteArray, created array of size=$total")
+                println("HttpProxy: Exiting concatToByteArray, created array of size=$total")
                 return out
             } catch (e: Exception) {
-                println("ClaimCheckProxy: Error in concatToByteArray")
+                println("HttpProxy: Error in concatToByteArray: ${e.message}")
                 e.printStackTrace()
                 throw e
             }
@@ -1037,7 +778,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Begin sent successfully")
             println("ClaimCheckProxyFactory: Exiting doBegin")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doBegin for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doBegin for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1077,7 +818,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Data sent successfully")
             println("ClaimCheckProxyFactory: Exiting doData")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doData for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doData for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1109,7 +850,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: End sent successfully")
             println("ClaimCheckProxyFactory: Exiting doEnd")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doEnd for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doEnd for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1141,7 +882,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Abort sent successfully")
             println("ClaimCheckProxyFactory: Exiting doAbort")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doAbort for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doAbort for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1177,7 +918,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Flush sent successfully")
             println("ClaimCheckProxyFactory: Exiting doFlush")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doFlush for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doFlush for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1215,7 +956,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Window sent successfully")
             println("ClaimCheckProxyFactory: Exiting doWindow")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doWindow for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doWindow for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1247,7 +988,7 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: Reset sent successfully")
             println("ClaimCheckProxyFactory: Exiting doReset")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doReset for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doReset for traceId=$traceId: ${e.message}")
             e.printStackTrace()
         }
     }
@@ -1274,46 +1015,8 @@ class ClaimCheckProxyFactory(
             println("ClaimCheckProxyFactory: HTTP Reset sent with status=${status.asString()}")
             println("ClaimCheckProxyFactory: Exiting doHttpReset")
         } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in doHttpReset for traceId=$traceId")
+            println("ClaimCheckProxyFactory: Error in doHttpReset for traceId=$traceId: ${e.message}")
             e.printStackTrace()
-        }
-    }
-
-    private fun newClaimCheckStream(
-        sender: MessageConsumer,
-        originId: Long,
-        routedId: Long,
-        streamId: Long,
-        sequence: Long,
-        acknowledge: Long,
-        maximum: Int,
-        traceId: Long,
-        authorization: Long,
-        affinity: Long
-    ): MessageConsumer {
-        println("ClaimCheckProxyFactory: Entering newClaimCheckStream(traceId=$traceId, streamId=$streamId)")
-        try {
-            val begin = beginRW.wrap(writeBuffer, 0, writeBuffer.capacity())
-                .originId(originId)
-                .routedId(routedId)
-                .streamId(streamId)
-                .sequence(sequence)
-                .acknowledge(acknowledge)
-                .maximum(maximum)
-                .traceId(traceId)
-                .authorization(authorization)
-                .affinity(affinity)
-                .extension(EMPTY_EXTENSION.buffer(), EMPTY_EXTENSION.offset(), EMPTY_EXTENSION.sizeof())
-                .build()
-            val receiver = streamFactory.newStream(begin.typeId(), begin.buffer(), begin.offset(), begin.sizeof(), sender)
-            receiver.accept(begin.typeId(), begin.buffer(), begin.offset(), begin.sizeof())
-            println("ClaimCheckProxyFactory: ClaimCheck stream created and Begin sent")
-            println("ClaimCheckProxyFactory: Exiting newClaimCheckStream")
-            return receiver
-        } catch (e: Exception) {
-            println("ClaimCheckProxyFactory: Error in newClaimCheckStream for traceId=$traceId")
-            e.printStackTrace()
-            throw e
         }
     }
 }
