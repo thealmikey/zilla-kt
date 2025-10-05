@@ -36,19 +36,19 @@ open class ZpmCacheKt(
 
     private val session: RepositorySystemSession =
         ZpmRepositoryConfigKt.newRepositorySystemSessionBuilder(system, localCacheDir)
-            .setTransferListener(LoggingTransferListener())
+//            .setTransferListener(LoggingTransferListener())
             .setSystemProperties(System.getProperties())
-            .setSystemProperties(
-                System.getProperties().apply {
-                    this["maven.wagon.http.ssl.insecure"] = "true"
-                    this["maven.wagon.http.ssl.allowall"] = "true"
-                    this["maven.wagon.http.ssl.ignore.validity.dates"] = "true"
-                    this["maven.artifact.skipSignatures"] = "true"
-                    this["maven.artifact.threads"] = "4"
-                    this["maven.dependency.ignore"] = "true"
-                    this["maven.parallel"] = "true"
-                }
-            )
+//            .setSystemProperties(
+//                System.getProperties().apply {
+//                    this["maven.wagon.http.ssl.insecure"] = "true"
+//                    this["maven.wagon.http.ssl.allowall"] = "true"
+//                    this["maven.wagon.http.ssl.ignore.validity.dates"] = "true"
+//                    this["maven.artifact.skipSignatures"] = "true"
+//                    this["maven.artifact.threads"] = "4"
+//                    this["maven.dependency.ignore"] = "true"
+//                    this["maven.parallel"] = "true"
+//                }
+//            )
             .setDependencySelector(
                 org.eclipse.aether.util.graph.selector.AndDependencySelector(
                     org.eclipse.aether.util.graph.selector.ScopeDependencySelector("test", "provided"),

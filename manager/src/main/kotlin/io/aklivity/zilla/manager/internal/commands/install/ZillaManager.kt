@@ -24,7 +24,7 @@ class ZillaManager : CliktCommand(name = "zpm") {
     private val launcherDir: String by option(
         "--launcher-directory",
         help = "launcher directory"
-    ).default("")
+    ).default("zilla")
 
     override fun run() {
         logger.info("Zilla Package Manager v0.9.MikeVersion")
@@ -35,50 +35,70 @@ class ZillaManager : CliktCommand(name = "zpm") {
 }
 
 class WrapCommand : CliktCommand(name = "wrap") {
-    private val version: String by option("--version", help = "Zilla Manager version").default("develop-SNAPSHOT")
+    private val version: String by option("--version", help = "Zilla Manager version")
+        .default("develop-SNAPSHOT")
     private val logger = LoggerFactory.getLogger(WrapCommand::class.java)
 
     override fun run() {
         logger.info("Wrapping zpm command for version $version")
 
         val launcherDir = currentContext.findRoot().obj as? Path ?: Paths.get("")
-        val wrapperPath = launcherDir.resolve("zpmw")
-        val wrapperDir = launcherDir.resolve(".zpm/wrapper")
+        val wrapperScriptPath = launcherDir.resolve("zpmw")
         val wrapperJarName = "manager-$version.jar"
-        val wrapperJarPath = wrapperDir.resolve(wrapperJarName)
+
+        val homeString = "\$HOME"+"/.m2/repository/io/aklivity/zilla/manager/$version/$wrapperJarName"
+
+        // Build the absolute path in ~/.m2 for the manager jar
+//        val localJarPath = Paths.get("${'$'}wrappedPath")
+//            .resolve(".m2/repository/io/aklivity/zilla/manager")
+//            .resolve(version)
+//            .resolve(wrapperJarName)
+//            .toAbsolutePath()
+//        val localJarPathStr = localJarPath.toString()
+        val localJarPathStr = homeString
 
         val wrapperContent = """
             |#!/bin/bash
-            |java -jar .zpm/wrapper/$wrapperJarName "$@"
+            |version="$version"
+            |localPath="$localJarPathStr"
+            |wrappedPath=".zpm/wrapper/$wrapperJarName"
+            |
+            |if [ ! -r "${'$'}wrappedPath" ]; then
+            |  mkdir -p "$(dirname "${'$'}wrappedPath")"
+            |  if [ -r "${'$'}localPath" ]; then
+            |    echo "${'$'}wrappedPath not found, copying from ${'$'}localPath"
+            |    cp "${'$'}localPath" "${'$'}wrappedPath"
+            |  else
+            |    echo "Error: ${'$'}localPath not found. Please run 'mvn install' for manager first."
+            |    exit 1
+            |  fi
+            |fi
+            |
+            |exec java -jar "${'$'}wrappedPath" "${'$'}@"
         """.trimMargin()
 
         try {
-            // 1️⃣ Create wrapper directories if missing
-            Files.createDirectories(wrapperDir)
-            logger.info("Ensured wrapper directory exists: $wrapperDir")
+            // Ensure the launcher dir exists (so the script goes where you expect)
+            Files.createDirectories(launcherDir)
 
-            // 2️⃣ Copy JAR from target → .zpm/wrapper
-            val builtJar = launcherDir.resolve("target").resolve(wrapperJarName)
-            if (Files.exists(builtJar)) {
-                Files.copy(builtJar, wrapperJarPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                logger.info("Copied $builtJar → $wrapperJarPath")
-            } else {
-                logger.warn("Built JAR not found at $builtJar. Skipping copy.")
-                echo("Warning: Built JAR not found at $builtJar — skipping copy.")
+            // Write the script
+            Files.writeString(wrapperScriptPath, wrapperContent)
+
+            // Make it executable (POSIX, with fallback)
+            try {
+                Files.setPosixFilePermissions(
+                    wrapperScriptPath,
+                    PosixFilePermissions.fromString("rwxr-xr-x")
+                )
+            } catch (ex: UnsupportedOperationException) {
+                // e.g. on Windows hosts — fallback
+                wrapperScriptPath.toFile().setExecutable(true, /* ownerOnly = */ false)
             }
 
-            // 3️⃣ Write wrapper script (zpmw)
-            Files.writeString(wrapperPath, wrapperContent)
-            Files.setPosixFilePermissions(wrapperPath, PosixFilePermissions.fromString("rwxr-xr-x"))
-            logger.info("Created wrapper script: $wrapperPath")
-            echo("Created wrapper script: $wrapperPath")
-
-            // 4️⃣ Final feedback
-            echo("✅ Wrapper setup complete. You can now run './zpmw'")
-
+            logger.info("Created zpmw script at: $wrapperScriptPath")
+            echo("Created zpmw script: $wrapperScriptPath")
         } catch (e: Exception) {
-            logger.error("Failed to create wrapper script: ${e.message}", e)
-            echo("❌ Error: Failed to create wrapper script: ${e.message}")
+            logger.error("Failed to create zpmw: ${e.message}", e)
             throw RuntimeException("Failed to wrap zpm command", e)
         }
     }

@@ -55,7 +55,6 @@
     <dependency>
       <groupId>org.leadpony.joy</groupId>
       <artifactId>joy-yaml</artifactId>
-      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.agrona</groupId>

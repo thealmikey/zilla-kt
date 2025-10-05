@@ -375,12 +375,12 @@
             <groupId>${project.groupId}</groupId>
             <artifactId>manager</artifactId>
           </executableDependency>
-          <mainClass>io.aklivity.zilla.manager.internal.ZpmMain</mainClass>
-          <arguments>
-            <argument>wrap</argument>
-            <argument>--launcher-directory</argument>
-            <argument>${project.basedir}/src/main/docker</argument>
-          </arguments>
+          <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
+            <arguments>
+                <argument>--launcher-directory</argument>
+                <argument>${project.basedir}/src/main/docker</argument>
+                <argument>wrap</argument>
+            </arguments>
         </configuration>
         <executions>
           <execution>
@@ -399,8 +399,8 @@
           <filter>${*}</filter>
           <images combine.children="append">
             <image>
-              <alias>zilla</alias>
-              <name>ghcr.io/aklivity/zilla:%v</name>
+              <alias>mike-kotlin-zilla</alias>
+              <name>mike/kotlin/zilla:%v</name>
               <build>
                 <contextDir>${project.basedir}/src/main/docker</contextDir>
                 <tags>
