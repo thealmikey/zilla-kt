@@ -1,17 +1,8 @@
 services:
-  zillakt:
-    image: mike/kotlin/zilla:develop-SNAPSHOT
-    ports:
-      - "12345:12345"
-    volumes:
-      - ./etc:/etc/zilla
-    command: start -v -e
-    networks:
-      - my_network
 
   minio:
     image: minio/minio:latest
-    container_name: minioz
+    container_name: minionz
     ports:
       - "9000:9000"     # MinIO API
       - "9001:9001"     # MinIO Console (optional)

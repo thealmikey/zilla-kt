@@ -7,6 +7,7 @@ import io.aklivity.zilla.manager.internal.commands.install.LauncherWriter
 import io.aklivity.zilla.manager.internal.commands.install.ZpmError
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 
@@ -19,7 +20,8 @@ class DefaultLauncherWriter(
     override fun write(entryModule: String, outputDir: Path): Either<ZpmError, Path> = Either.catch {
         val launcherPath = launcherDir.resolve("zilla")
         val imagePath = outputDir.resolve("image")
-        val javaBin = imagePath.relativize(launcherDir).resolve("bin/java").toString()
+        // Compute relative path from script's runtime directory to Java binary
+        val javaBin = Paths.get(".zpm").resolve("image/bin/java").toString()
 
         if (dryRun) {
             feedback("🧪 [dry-run] Would write launcher for module $entryModule to $launcherPath")

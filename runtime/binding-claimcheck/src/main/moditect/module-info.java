@@ -8,6 +8,7 @@ module io.aklivity.zilla.runtime.binding.claimcheck
     requires com.fasterxml.jackson.dataformat.yaml;
     requires io.aklivity.zilla.runtime.engine;
     requires org.leadpony.justify;
+    impo
 
     exports io.aklivity.zilla.runtime.binding.claimcheck.config;
     exports io.aklivity.zilla.runtime.binding.claimcheck.internal;

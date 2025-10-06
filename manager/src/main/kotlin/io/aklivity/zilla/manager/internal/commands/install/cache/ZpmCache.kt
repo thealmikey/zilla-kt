@@ -77,7 +77,7 @@ open class ZpmCacheKt(
         imports: List<ZpmDependencyKt>,
         dependencies: List<ZpmDependencyKt>
     ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
-        println("=== [START] Resolving imports=${imports.size}, dependencies=${dependencies.size} ===")
+
 
         val artifacts = mutableListOf<ZpmArtifactKt>()
         val imported = mutableMapOf<ZpmDependencyKt, String>()
@@ -88,26 +88,26 @@ open class ZpmCacheKt(
                 val artifactVersion = imp.version.getOrElse { "develop-SNAPSHOT" }
                 val artifact = DefaultArtifact(imp.groupId, imp.artifactId, "pom", artifactVersion)
                 val artifactIdStr = "${imp.groupId}:${imp.artifactId}:$artifactVersion"
-                println("[IMPORT] Checking $artifactIdStr")
+
 
                 if (!seenArtifacts.add(artifactIdStr)) {
-                    println("  ↳ Skipping $artifactIdStr (already processed)")
+
                     return@forEach
                 }
 
                 val localPom = localFileForArtifact(artifact)
-                println("  [DEBUG] Expected POM path in .m2 → $localPom")
+
                 if (localPom.exists()) {
-                    println("  [LOCAL] Found POM in .m2: $localPom")
+
                 } else {
-                    println("  [REMOTE] POM not in .m2, will fetch if needed…")
+
                 }
 
                 val descriptorRequest = ArtifactDescriptorRequest(artifact, repositories, null)
                 val descriptorResult = try {
                     system.readArtifactDescriptor(session, descriptorRequest)
                 } catch (e: ArtifactDescriptorException) {
-                    println("  [ERROR] Failed to read descriptor for $artifactIdStr → ${e.message}")
+
                     e.printStackTrace()
                     return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, e).left()
                 }
@@ -117,7 +117,7 @@ open class ZpmCacheKt(
                         dep.artifact.version
                 }
             } catch (e: Exception) {
-                println("[ERROR] Exception in import resolution: ${e.message}")
+
                 e.printStackTrace()
                 return ZpmResolutionErrorKt.DependencyResolutionError("${imp.groupId}:${imp.artifactId}", e).left()
             }
@@ -138,7 +138,7 @@ open class ZpmCacheKt(
             val version = dep.version.getOrElse {
                 imported[ZpmDependencyKt(dep.groupId, dep.artifactId, arrow.core.none())] ?: "develop-SNAPSHOT"
             }
-            println("[DEP] Adding dependency ${dep.groupId}:${dep.artifactId}:$version")
+
             val artifact = DefaultArtifact(dep.groupId, dep.artifactId, "jar", version)
             collectRequest.addDependency(Dependency(artifact, JavaScopes.COMPILE))
         }
@@ -148,7 +148,7 @@ open class ZpmCacheKt(
         val dependencyResult = try {
             system.resolveDependencies(session, DependencyRequest(collectRequest, null))
         } catch (e: Exception) {
-            println("[ERROR] Dependency resolution failed: ${e.message}")
+
             e.printStackTrace()
             return ZpmResolutionErrorKt.DependencyResolutionError("dependencies", e).left()
         }
@@ -161,14 +161,14 @@ open class ZpmCacheKt(
             val artifact = dep.artifact
             val artifactIdStr = "${artifact.groupId}:${artifact.artifactId}:${artifact.version}"
             if (!seenArtifacts.add(artifactIdStr)) {
-                println("  ↳ Skipping $artifactIdStr (already processed)")
+
                 return@forEach
             }
 
-            println("[RESOLVE] Trying $artifactIdStr")
+
             val artifactPath = resolveArtifactFromZpmOrM2(artifact)
             if (artifactPath != null) {
-                println("  [OK] Resolved $artifactIdStr → $artifactPath")
+
                 val id = ZpmArtifactIdKt.parse(artifactIdStr)
                 val deps = node.children.mapNotNull { child ->
                     child.dependency?.artifact?.let {
@@ -177,12 +177,12 @@ open class ZpmCacheKt(
                 }.toSet()
                 artifacts.add(ZpmArtifactKt(id, artifactPath, deps))
             } else {
-                println("  [FAIL] Could not resolve $artifactIdStr")
+
                 return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, Exception("Artifact missing")).left()
             }
         }
 
-        println("=== [DONE] Resolved ${artifacts.size} artifacts ===")
+
         return artifacts.right()
     }
 
@@ -192,24 +192,24 @@ open class ZpmCacheKt(
     private fun resolveArtifactFromZpmOrM2(artifact: org.eclipse.aether.artifact.Artifact): Path? {
         val zpmPath = zpmFileForArtifact(artifact)
         if (zpmPath.exists()) {
-            println("    [HIT] Found modular jar in .zpm: $zpmPath")
+
             return zpmPath.toPath()
         }
 
         val localFile = localFileForArtifact(artifact)
         if (localFile.exists()) {
-            println("    [HIT] Found raw jar in .m2: $localFile")
+
             return cacheArtifactFile(localFile.toPath(), "${artifact.groupId}:${artifact.artifactId}:${artifact.version}")
         }
 
-        println("    [MISS] Not in .zpm or .m2, fetching from remote…")
+
         return try {
             val artifactResult = system.resolveArtifact(session, ArtifactRequest(artifact, repositories, null))
             artifactResult.artifact.file?.toPath()?.let {
                 cacheArtifactFile(it, "${artifact.groupId}:${artifact.artifactId}:${artifact.version}")
             }
         } catch (e: ArtifactResolutionException) {
-            println("    [FAIL] Could not fetch artifact → ${e.message}")
+
             e.printStackTrace()
             null
         }
@@ -244,10 +244,10 @@ open class ZpmCacheKt(
         try {
             Files.createDirectories(targetPath.parent)
             Files.copy(artifactFile, targetPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            println("    [CACHE] Stored modularized $gav → $targetPath")
+
             return targetPath
         } catch (e: Exception) {
-            println("    [CACHE-ERROR] Could not cache $gav → ${e.message}")
+
             e.printStackTrace()
             return null
         }
@@ -256,16 +256,16 @@ open class ZpmCacheKt(
     private class LoggingTransferListener : AbstractTransferListener() {
         private val formatter = DecimalFormat("0.0")
         override fun transferStarted(event: TransferEvent) {
-            println("[TRANSFER-START] ${event.resource.resourceName}")
+
         }
         override fun transferProgressed(event: TransferEvent) {
             val res: TransferResource = event.resource
             val kb = event.dataLength / 1024.0
             val totalKb = res.contentLength / 1024.0
-            println("[PROGRESS] ${res.resourceName} - ${formatter.format(kb)}/${formatter.format(totalKb)} KB")
+
         }
         override fun transferSucceeded(event: TransferEvent) {
-            println("[TRANSFER-DONE] ${event.resource.resourceName}")
+
         }
     }
 }

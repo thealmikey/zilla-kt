@@ -28,8 +28,8 @@ class ZillaManager : CliktCommand(name = "zpm") {
 
     override fun run() {
         logger.info("Zilla Package Manager v0.9.MikeVersion")
-        println("I have the launcher directoey")
-        println("The launcher directory is $launcherDir")
+
+
         currentContext.obj = Paths.get(launcherDir) // Store as Path
     }
 }

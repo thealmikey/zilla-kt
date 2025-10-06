@@ -15,7 +15,7 @@ FROM ubuntu:jammy-20250404
 ENV ZILLA_VERSION=${project.version}
 
 COPY --from=build /build/.zpm /opt/zilla/.zpm
-COPY --from=build /build/zilla /opt/zilla/zilla
+COPY --from=build /build/.zpm/zilla /opt/zilla/zilla
 COPY zilla.properties /opt/zilla/.zilla/zilla.properties
 
 ENTRYPOINT ["/opt/zilla/zilla"]

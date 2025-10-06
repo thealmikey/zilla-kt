@@ -396,6 +396,7 @@
         <artifactId>docker-maven-plugin</artifactId>
         <version>0.45.0</version>
         <configuration>
+            <dockerHost>unix://${user.home}/.docker/desktop/docker.sock</dockerHost>
           <filter>${*}</filter>
           <images combine.children="append">
             <image>

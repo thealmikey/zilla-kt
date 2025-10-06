@@ -481,7 +481,7 @@ open class MyZpmInstall(
             if (delegate.paths.add(path)) {
                 delegatedPaths.add(path)
                 logger.debug("Moved path $path to delegate for module ${module.name}")
-                println("Moved path $path to delegate for module ${module.name}")
+
             } else {
                 val error = "Duplicate path in delegate for module ${module.name}: $path"
                 errors.add(error)
@@ -493,9 +493,9 @@ open class MyZpmInstall(
         module.depends.forEach { dep ->
             val modName = if (dep.moduleName.isNullOrEmpty()) "" else dep.moduleName
             val depModule = resolve(modName)
-            println("The dependency module exists, will check for artifact paths")
-            println("The dependency module for depModule: ${depModule?.name} will be shown below")
-            println("The dependency paths for depModule: ${depModule?.name}, are in the list here: ${depModule?.paths}")
+
+
+
 
             if (depModule == null) {
                 val error = "Unresolved dependency $dep for module ${module.name}"

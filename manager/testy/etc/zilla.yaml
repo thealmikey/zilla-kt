@@ -34,7 +34,7 @@
       "type": "claimcheck",
       "kind": "proxy",
       "options": {
-        "endpoint": "http://localhost:9003",
+        "endpoint": "minioz:9000",
         "accessKey": "minio",
         "secretKey": "minio123",
         "bucket": "mybucket"
@@ -64,8 +64,8 @@
       ]
     },
     "north_echo_server": {
-      "type": "tcp",
-      "kind": "client"
+      "type": "echo",
+      "kind": "server"
     }
   },
   "telemetry": {
