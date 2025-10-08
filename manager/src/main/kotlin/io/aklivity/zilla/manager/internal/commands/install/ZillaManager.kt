@@ -1,6 +1,7 @@
 package io.aklivity.zilla.manager.internal
 
 import arrow.core.Either
+import arrow.core.some
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.core.obj
@@ -10,6 +11,7 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import io.aklivity.zilla.manager.internal.commands.install.MyZpmInstall
 import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmCacheKt
+import io.aklivity.zilla.manager.internal.commands.install.cache.ZpmDependencyKt
 import io.aklivity.zilla.manager.internal.commands.install.impl.*
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -18,6 +20,16 @@ import java.nio.file.Paths
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.Comparator
 import kotlin.io.path.exists
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class ZpmJson(
+    val repositories: List<String>,
+    val imports: List<String>,
+    val dependencies: List<String>
+)
 
 class ZillaManager : CliktCommand(name = "zpm") {
     private val logger = LoggerFactory.getLogger(ZillaManager::class.java)
@@ -28,8 +40,6 @@ class ZillaManager : CliktCommand(name = "zpm") {
 
     override fun run() {
         logger.info("Zilla Package Manager v0.9.MikeVersion")
-
-
         currentContext.obj = Paths.get(launcherDir) // Store as Path
     }
 }
@@ -41,20 +51,10 @@ class WrapCommand : CliktCommand(name = "wrap") {
 
     override fun run() {
         logger.info("Wrapping zpm command for version $version")
-
         val launcherDir = currentContext.findRoot().obj as? Path ?: Paths.get("")
         val wrapperScriptPath = launcherDir.resolve("zpmw")
         val wrapperJarName = "manager-$version.jar"
-
-        val homeString = "\$HOME"+"/.m2/repository/io/aklivity/zilla/manager/$version/$wrapperJarName"
-
-        // Build the absolute path in ~/.m2 for the manager jar
-//        val localJarPath = Paths.get("${'$'}wrappedPath")
-//            .resolve(".m2/repository/io/aklivity/zilla/manager")
-//            .resolve(version)
-//            .resolve(wrapperJarName)
-//            .toAbsolutePath()
-//        val localJarPathStr = localJarPath.toString()
+        val homeString = "\$HOME/.m2/repository/io/aklivity/zilla/manager/$version/$wrapperJarName"
         val localJarPathStr = homeString
 
         val wrapperContent = """
@@ -78,23 +78,16 @@ class WrapCommand : CliktCommand(name = "wrap") {
         """.trimMargin()
 
         try {
-            // Ensure the launcher dir exists (so the script goes where you expect)
             Files.createDirectories(launcherDir)
-
-            // Write the script
             Files.writeString(wrapperScriptPath, wrapperContent)
-
-            // Make it executable (POSIX, with fallback)
             try {
                 Files.setPosixFilePermissions(
                     wrapperScriptPath,
                     PosixFilePermissions.fromString("rwxr-xr-x")
                 )
             } catch (ex: UnsupportedOperationException) {
-                // e.g. on Windows hosts — fallback
-                wrapperScriptPath.toFile().setExecutable(true, /* ownerOnly = */ false)
+                wrapperScriptPath.toFile().setExecutable(true, false)
             }
-
             logger.info("Created zpmw script at: $wrapperScriptPath")
             echo("Created zpmw script: $wrapperScriptPath")
         } catch (e: Exception) {
@@ -103,7 +96,6 @@ class WrapCommand : CliktCommand(name = "wrap") {
         }
     }
 }
-
 
 class InstallCommand : CliktCommand(name = "install") {
     private val templatePath: String by option("--template", "-t", help = "Path to zpm.json template").default("zpm.json")
@@ -143,7 +135,7 @@ class InstallCommand : CliktCommand(name = "install") {
             launcherWriter = DefaultLauncherWriter(
                 dryRun = false,
                 feedback = feedback,
-                launcherDir = install // Use installDir for zilla script
+                launcherDir = install
             ),
             dryRun = false,
             verbose = debug,
@@ -176,7 +168,6 @@ class CleanCommand : CliktCommand(name = "clean") {
         logger.info("Cleaning installation directory $install and launcher directory $launcherDir")
         echo("Cleaning installation directory $install and launcher directory $launcherDir")
         try {
-            // Clean launcher directory
             if (Files.exists(launcherDir)) {
                 Files.walk(launcherDir)
                     .sorted(Comparator.reverseOrder())
@@ -192,7 +183,6 @@ class CleanCommand : CliktCommand(name = "clean") {
                 echo("Cleaned launcher directory: $launcherDir")
             }
 
-            // Clean installation directory
             if (Files.exists(install)) {
                 Files.walk(install)
                     .sorted(Comparator.reverseOrder())
@@ -218,8 +208,153 @@ class CleanCommand : CliktCommand(name = "clean") {
     }
 }
 
+class GenerateAssemblyCommand : CliktCommand(name = "generate-assembly") {
+    private val outputPath: String by option(
+        "--output",
+        "-o",
+        help = "Output path for assembly.xml"
+    ).default("src/main/docker/assembly.xml")
+    private val zpmJsonPath: String by option(
+        "--zpm-json",
+        "-j",
+        help = "Path to zpm.json file"
+    ).default("src/main/docker/zpm.json")
+    private val debug: Boolean by option("--debug", help = "Enable debug logging").flag(default = false)
+    private val logger = LoggerFactory.getLogger(GenerateAssemblyCommand::class.java)
+
+    override fun run() {
+        val output = Paths.get(outputPath)
+        val zpmJson = Paths.get(zpmJsonPath)
+        logger.info("Generating assembly.xml at $output using $zpmJson")
+        echo("Generating assembly.xml at $output using $zpmJson")
+
+        // Step 1: Read and parse zpm.json
+        if (!zpmJson.exists()) {
+            logger.error("zpm.json file not found: $zpmJson")
+            echo("Error: zpm.json file not found: $zpmJson")
+            throw RuntimeException("zpm.json file not found: $zpmJson")
+        }
+
+        val zpmJsonContent = zpmJson.toFile().readText()
+        val zpmConfig = try {
+            Json.decodeFromString<ZpmJson>(zpmJsonContent)
+        } catch (e: Exception) {
+            logger.error("Failed to parse zpm.json: ${e.message}")
+            echo("Error: Failed to parse zpm.json: ${e.message}")
+            throw RuntimeException("Failed to parse zpm.json", e)
+        }
+
+        // Step 2: Resolve dependencies using ZpmCacheKt
+        val cache = ZpmCacheKt(
+            repositories = zpmConfig.repositories.map {
+                org.eclipse.aether.repository.RemoteRepository.Builder(it, "default", it).build()
+            },
+            localCacheDir = Paths.get(System.getProperty("user.home"), ".m2", "repository"),
+            zpmCacheDir = Paths.get(System.getProperty("user.home"), ".zpm", "cache")
+        )
+
+        val imports = zpmConfig.imports.map { coords ->
+            val parts = coords.split(":")
+            ZpmDependencyKt(parts[0], parts[1], parts.getOrElse(2) { "develop-SNAPSHOT" }.some())
+        }
+        val dependencies = zpmConfig.dependencies.map { coords ->
+            val parts = coords.split(":")
+            if (parts.size > 2) {
+                ZpmDependencyKt(parts[0], parts[1], parts[2].some())
+            } else {
+                ZpmDependencyKt(parts[0], parts[1], arrow.core.none())
+            }
+        }
+
+        val resolvedArtifacts = when (val result = cache.resolveImports(imports, dependencies)) {
+            is Either.Right -> result.value
+            is Either.Left -> {
+                logger.error("Failed to resolve dependencies: ${result.value}")
+                echo("Error: Failed to resolve dependencies: ${result.value}")
+                throw RuntimeException("Failed to resolve dependencies: ${result.value}")
+            }
+        }
+
+        // Step 3: Generate includes with dynamic wildcard patterns
+        val includes = mutableSetOf<String>()
+
+        val groupedArtifacts = resolvedArtifacts.groupBy { artifact ->
+            artifact.id.toString().split(":")[0] // e.g., io.aklivity.zilla
+        }
+
+        groupedArtifacts.forEach { (groupId, artifacts) ->
+            val groupPath = groupId.replace(".", "/")
+            if (groupId == "io.aklivity.zilla") {
+                val artifactIds = artifacts.map { it.id.toString().split(":")[1] }
+                val prefixes = artifactIds.mapNotNull { id ->
+                    val dashIndex = id.indexOf('-')
+                    if (dashIndex > 0) id.substring(0, dashIndex + 1) else null
+                }.distinct()
+
+                prefixes.forEach { prefix ->
+                    if (artifactIds.count { it.startsWith(prefix) } > 1) {
+                        includes.add("            <include>$groupPath/$prefix*/**</include>")
+                    }
+                }
+
+                artifactIds.forEach { id ->
+                    if (prefixes.none { id.startsWith(it) } ||
+                        prefixes.any { id.startsWith(it) && artifactIds.count { it2 -> it2.startsWith(it) } == 1 }) {
+                        includes.add("            <include>$groupPath/$id/**</include>")
+                    }
+                }
+            } else {
+                includes.add("            <include>$groupPath/**</include>")
+            }
+        }
+
+        // --- NEW PATCH SECTION ---
+        // Always include zilla manager and base imports (runtime, incubator, etc.)
+        includes.add("            <include>io/aklivity/zilla/manager/**</include>")
+
+        zpmConfig.imports.forEach { imp ->
+            val parts = imp.split(":")
+            if (parts.size >= 2) {
+                val path = parts[0].replace('.', '/') + "/" + parts[1]
+                includes.add("            <include>$path/**</include>")
+            }
+        }
+        // --- END PATCH SECTION ---
+
+        // Step 4: Generate assembly.xml
+        val assemblyContent = """
+            |<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+            |          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            |          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+            |    <id>zpm</id>
+            |    <fileSets>
+            |        <fileSet>
+            |            <directory>${'$'}{settings.localRepository}</directory>
+            |            <outputDirectory>./</outputDirectory>
+            |            <useDefaultExcludes>false</useDefaultExcludes>
+            |            <includes>
+            |${includes.sorted().joinToString("\n")}
+            |            </includes>
+            |        </fileSet>
+            |    </fileSets>
+            |</assembly>
+        """.trimMargin()
+
+        try {
+            Files.createDirectories(output.parent)
+            Files.writeString(output, assemblyContent)
+            logger.info("Generated assembly.xml with ${includes.size} includes at $output")
+            echo("Generated assembly.xml with ${includes.size} includes at $output")
+        } catch (e: Exception) {
+            logger.error("Failed to write assembly.xml: ${e.message}")
+            echo("Error: Failed to write assembly.xml: ${e.message}")
+            throw RuntimeException("Failed to write assembly.xml", e)
+        }
+    }
+}
+
 fun main(args: Array<String>) {
     ZillaManager()
-        .subcommands(WrapCommand(), InstallCommand(), CleanCommand())
+        .subcommands(WrapCommand(), InstallCommand(), CleanCommand(), GenerateAssemblyCommand())
         .main(args)
 }

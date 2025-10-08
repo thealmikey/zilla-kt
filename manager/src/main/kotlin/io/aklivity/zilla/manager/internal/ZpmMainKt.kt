@@ -7,7 +7,7 @@ object ZpmMainKt {
     @JvmStatic
     fun main(args: Array<String>) {
         ZillaManager()
-            .subcommands(WrapCommand(), InstallCommand(), CleanCommand())
+            .subcommands(WrapCommand(), InstallCommand(), CleanCommand(), GenerateAssemblyCommand())
             .main(args)
     }
 }

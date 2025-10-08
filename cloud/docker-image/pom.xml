@@ -383,6 +383,21 @@
             </arguments>
         </configuration>
         <executions>
+            <execution>
+                <id>generate-assembly</id>
+                <phase>generate-resources</phase>
+                <goals>
+                    <goal>exec</goal>
+                </goals>
+                <configuration>
+                    <executable>${project.basedir}/src/main/docker/zpmw</executable>
+                    <arguments>
+                        <argument>generate-assembly</argument>
+                        <argument>--output</argument>
+                        <argument>${project.basedir}/src/main/docker/assembly.xml</argument>
+                    </arguments>
+                </configuration>
+            </execution>
           <execution>
             <phase>process-sources</phase>
             <goals>
@@ -400,8 +415,8 @@
           <filter>${*}</filter>
           <images combine.children="append">
             <image>
-              <alias>mike-kotlin-zilla</alias>
-              <name>mike/kotlin/zilla:%v</name>
+              <alias>zillali</alias>
+              <name>zillali:%v</name>
               <build>
                 <contextDir>${project.basedir}/src/main/docker</contextDir>
                 <tags>

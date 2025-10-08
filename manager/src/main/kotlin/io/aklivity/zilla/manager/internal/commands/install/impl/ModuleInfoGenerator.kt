@@ -425,8 +425,26 @@ open class ModuleInfoGenerator(
                     }
                     Files.move(tempJar, finalDelegatePath, StandardCopyOption.REPLACE_EXISTING)
 
+                    // Set permissions on the final delegate JAR
+                    if (!isWindows) {
+                        try {
+                            Files.setPosixFilePermissions(
+                                finalDelegatePath,
+                                PosixFilePermissions.fromString("rw-rw-r--") // Adjust as needed, e.g., "rwxrwxr-x" for executable
+                            )
+                            feedback?.invoke("✅ Set permissions on delegate JAR: $finalDelegatePath")
+                        } catch (e: Exception) {
+                            feedback?.invoke("❌ Failed to set permissions on $finalDelegatePath: ${e.message}")
+                            return ZpmResolutionErrorKt.DependencyResolutionError(
+                                "Failed to set permissions on delegate JAR $finalDelegatePath: ${e.message}"
+                            ).left()
+                        }
+                    }
+
                     feedback?.invoke("✅ Built delegate JAR at $finalDelegatePath with ${allPackages.size} exports and ${externalDependencies.size} requires")
                     finalDelegatePath
+
+
                 }.mapLeft { ex ->
                     feedback?.invoke("❌ Failed to build delegate module ${delegate.name}: ${ex.message}")
                     ZpmResolutionErrorKt.DependencyResolutionError(
