@@ -311,6 +311,7 @@ class GenerateAssemblyCommand : CliktCommand(name = "generate-assembly") {
         // --- NEW PATCH SECTION ---
         // Always include zilla manager and base imports (runtime, incubator, etc.)
         includes.add("            <include>io/aklivity/zilla/manager/**</include>")
+        includes.add("            <include>io/aklivity/zilla/zilla/**</include>")
 
         zpmConfig.imports.forEach { imp ->
             val parts = imp.split(":")
