@@ -23,6 +23,7 @@ import kotlin.io.path.exists
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.Serializable
+import org.eclipse.aether.repository.RemoteRepository
 
 @Serializable
 data class ZpmJson(
@@ -126,7 +127,7 @@ class InstallCommand : CliktCommand(name = "install") {
         }
 
         val installer = MyZpmInstall(
-            cache = ZpmCacheKt(emptyList(), install),
+            cache = ZpmCacheKt(mutableListOf<RemoteRepository>(), install),
             installDir = install,
             jarCopier = JarCopier(dryRun = false, feedback = feedback),
             manifestMerger = ManifestMerger(dryRun = false, feedback = feedback),
@@ -248,7 +249,7 @@ class GenerateAssemblyCommand : CliktCommand(name = "generate-assembly") {
         val cache = ZpmCacheKt(
             repositories = zpmConfig.repositories.map {
                 org.eclipse.aether.repository.RemoteRepository.Builder(it, "default", it).build()
-            },
+            }.toMutableList(),
             localCacheDir = Paths.get(System.getProperty("user.home"), ".m2", "repository"),
             zpmCacheDir = Paths.get(System.getProperty("user.home"), ".zpm", "cache")
         )
