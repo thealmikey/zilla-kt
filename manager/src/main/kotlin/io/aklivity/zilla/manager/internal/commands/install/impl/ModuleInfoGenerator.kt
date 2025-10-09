@@ -379,7 +379,19 @@ open class ModuleInfoGenerator(
                     val allPackages = getValidPackages(generatedDelegatePath)
                     val patchedContent = buildString {
                         appendLine("open module ${effectiveDelegate.name} {")
-                        allPackages.forEach { pkg -> appendLine("    exports $pkg;") }
+                        // Special case for okio: explicitly add okio package exports
+                        if (effectiveDelegate.name.contains("okio")) {
+                            appendLine("    exports okio;")
+                            appendLine("    exports okio.buffer;")
+                            appendLine("    exports okio.bzip2;")
+                            appendLine("    exports okio.gzip;")
+                            appendLine("    exports okio.internal;")
+                            appendLine("    exports okio.jmh;")
+                            appendLine("    exports okio.zipfilesystem;")
+                            allPackages.filter { !it.startsWith("okio") }.forEach { pkg -> appendLine("    exports $pkg;") }
+                        } else {
+                            allPackages.forEach { pkg -> appendLine("    exports $pkg;") }
+                        }
                         externalDependencies.forEach { dep -> appendLine("    requires $dep;") }
                         appendLine("}")
                     }
@@ -425,26 +437,8 @@ open class ModuleInfoGenerator(
                     }
                     Files.move(tempJar, finalDelegatePath, StandardCopyOption.REPLACE_EXISTING)
 
-                    // Set permissions on the final delegate JAR
-                    if (!isWindows) {
-                        try {
-                            Files.setPosixFilePermissions(
-                                finalDelegatePath,
-                                PosixFilePermissions.fromString("rw-rw-r--") // Adjust as needed, e.g., "rwxrwxr-x" for executable
-                            )
-                            feedback?.invoke("✅ Set permissions on delegate JAR: $finalDelegatePath")
-                        } catch (e: Exception) {
-                            feedback?.invoke("❌ Failed to set permissions on $finalDelegatePath: ${e.message}")
-                            return ZpmResolutionErrorKt.DependencyResolutionError(
-                                "Failed to set permissions on delegate JAR $finalDelegatePath: ${e.message}"
-                            ).left()
-                        }
-                    }
-
                     feedback?.invoke("✅ Built delegate JAR at $finalDelegatePath with ${allPackages.size} exports and ${externalDependencies.size} requires")
                     finalDelegatePath
-
-
                 }.mapLeft { ex ->
                     feedback?.invoke("❌ Failed to build delegate module ${delegate.name}: ${ex.message}")
                     ZpmResolutionErrorKt.DependencyResolutionError(

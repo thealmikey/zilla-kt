@@ -111,7 +111,6 @@ open class MyZpmInstall(
     open fun discoverModules(artifacts: List<ZpmArtifactKt>, feedback: ((String) -> Unit)?): List<ZpmModuleKt> {
         val modules = mutableListOf<ZpmModuleKt>()
         val systemModulePrefixes = setOf("java.", "jdk.")
-
         var injectHandled = false
 
         artifacts.forEach { artifact ->
@@ -158,8 +157,8 @@ open class MyZpmInstall(
                         return@forEach
                     }
 
-                    feedback?.invoke("✅ Found module: $moduleName (automatic=${descriptor.isAutomatic()})")
-                    logger.debug("Found module: $moduleName (automatic=${descriptor.isAutomatic()})")
+                    feedback?.invoke("✅ Found module: $moduleName (automatic=${descriptor.isAutomatic()}, coordinate=$coordinate)")
+                    logger.debug("Found module: $moduleName (automatic=${descriptor.isAutomatic()}, coordinate=$coordinate)")
 
                     modules.add(
                         ZpmModuleKt(
@@ -171,7 +170,7 @@ open class MyZpmInstall(
                                     if (systemModulePrefixes.any { req.toString().startsWith(it) } && !knownNonSystemButConfusing.contains(moduleName)) null else req
                                 }.toMutableSet(),
                             automatic = descriptor.isAutomatic(),
-                            delegating = false
+                            delegating = coordinate.contains("okio") // Force okio artifacts to delegate
                         )
                     )
                 }
@@ -194,7 +193,7 @@ open class MyZpmInstall(
         }
 
         feedback?.invoke("✅ Discovered ${modules.size} modules")
-        logger.debug("Discovered modules: ${modules.map { it.name ?: it.id }}")
+        logger.debug("Discovered modules: ${modules.map { "${it.name ?: it.id} (paths=${it.paths})" }}")
         return modules
     }
 
@@ -906,8 +905,8 @@ open class MyZpmInstall(
             .flatMap { artifacts ->
                 var modules = discoverModules(artifacts, feedback).toMutableList()
 
-                // 🔄 Deduplicate modules by name, keeping highest version
-                val groupedModules = modules.groupBy { it.name ?: it.id.toString() }
+                // 🔄 Deduplicate modules by name and coordinate to preserve okio variants
+                val groupedModules = modules.groupBy { "${it.name ?: it.id.toString()}:${it.id?.groupId}:${it.id?.artifactId}" }
                 val dedupedModules = groupedModules.mapValues { entry ->
                     if (entry.value.size > 1) {
                         feedback?.invoke(
@@ -921,6 +920,10 @@ open class MyZpmInstall(
                         entry.value.first()
                     }
                 }.values.toMutableList()
+
+                // Log deduplication results
+                feedback?.invoke("✅ Deduplicated to ${dedupedModules.size} modules: ${dedupedModules.map { "${it.name ?: it.id} (paths=${it.paths})" }}")
+                logger.debug("Deduplicated modules: ${dedupedModules.map { "${it.name ?: it.id} (paths=${it.paths})" }}")
 
                 // Replace modules with deduped list
                 modules = dedupedModules
