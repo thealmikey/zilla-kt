@@ -34,7 +34,7 @@ import java.text.DecimalFormat
 import java.util.concurrent.ConcurrentHashMap
 
 open class ZpmCacheKt(
-    private val repositories: List<RemoteRepository>,
+    var repositories: MutableList<RemoteRepository>,
     private val localCacheDir: Path = Paths.get(System.getProperty("user.home"), ".m2", "repository"),
     private val zpmCacheDir: Path = Paths.get(System.getProperty("user.home"), ".zpm", "cache")
 ) {
