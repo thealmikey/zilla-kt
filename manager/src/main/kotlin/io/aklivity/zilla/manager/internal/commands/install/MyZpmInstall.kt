@@ -35,6 +35,8 @@ import kotlin.io.path.exists
 import kotlin.io.path.isReadable
 import io.aklivity.zilla.manager.internal.commands.install.model.ZpmTemplate
 import kotlinx.serialization.json.Json
+import org.eclipse.aether.repository.RemoteRepository
+import java.io.File
 import java.lang.module.ModuleDescriptor
 import java.nio.file.Paths
 import kotlin.io.path.isWritable
@@ -43,6 +45,7 @@ import kotlin.compareTo
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.deleteExisting
 import kotlin.io.path.deleteRecursively
+import kotlin.io.path.isRegularFile
 
 open class MyZpmInstall(
     private val cache: ZpmCacheKt,
@@ -837,14 +840,33 @@ open class MyZpmInstall(
             )
         } as Either<ZpmResolutionErrorKt, Unit>
 
-    open fun resolveDependencies(template: ZpmTemplate, feedback: ((String) -> Unit)?): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
+    open fun resolveDependencies(
+        template: ZpmTemplate,
+        feedback: ((String) -> Unit)?
+    ): Either<ZpmResolutionErrorKt, List<ZpmArtifactKt>> {
+
         feedback?.invoke("🔍 Converting ${template.imports.size} imports and ${template.dependencies.size} dependencies")
         val imports = template.imports.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
         val deps = template.dependencies.mapNotNull { ZpmDependencyKt.fromCoordinates(it) }
         feedback?.invoke("✅ Resolved ${imports.size} imports and ${deps.size} dependencies")
 
         feedback?.invoke("📦 Resolving dependencies via cache")
-        return cache.resolveImports(imports, deps).mapLeft {
+
+        // ✅ Create RemoteRepository objects properly
+        val remoteRepositories = template.repositories.mapIndexed { index, repoUrl ->
+            val id = when {
+                repoUrl.contains("maven2") -> "central"
+                repoUrl.contains("jitpack") -> "jitpack"
+                repoUrl.contains("aklivity") -> "aklivity"
+                else -> "repo$index"
+            }
+            RemoteRepository.Builder(id, "default", repoUrl).build()
+        }.toMutableList()
+
+        // ✅ Apply them to cache and resolve
+        return cache.apply {
+            repositories = remoteRepositories
+        }.resolveImports(imports, deps).mapLeft {
             feedback?.invoke("❌ Dependency resolution failed: ${it.message}")
             it
         }
