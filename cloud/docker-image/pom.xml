@@ -367,45 +367,66 @@
           </excludes>
         </configuration>
       </plugin>
-      <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>exec-maven-plugin</artifactId>
-        <configuration>
-          <executableDependency>
-            <groupId>${project.groupId}</groupId>
-            <artifactId>manager</artifactId>
-          </executableDependency>
-          <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
-            <arguments>
-                <argument>--launcher-directory</argument>
-                <argument>${project.basedir}/src/main/docker</argument>
-                <argument>wrap</argument>
-            </arguments>
-        </configuration>
-        <executions>
-            <execution>
-                <id>generate-assembly</id>
-                <phase>generate-resources</phase>
-                <goals>
-                    <goal>exec</goal>
-                </goals>
-                <configuration>
-                    <executable>${project.basedir}/src/main/docker/zpmw</executable>
-                    <arguments>
-                        <argument>generate-assembly</argument>
-                        <argument>--output</argument>
-                        <argument>${project.basedir}/src/main/docker/assembly.xml</argument>
-                    </arguments>
-                </configuration>
-            </execution>
-          <execution>
-            <phase>process-sources</phase>
-            <goals>
-              <goal>java</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
+        <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+
+                <!-- Step 1: Run 'wrap' to generate zpmw if you still want it -->
+                <execution>
+                    <id>wrap</id>
+                    <phase>generate-sources</phase>
+                    <goals>
+                        <goal>exec</goal>
+                    </goals>
+                    <configuration>
+                        <executableDependency>
+                            <groupId>${project.groupId}</groupId>
+                            <artifactId>manager</artifactId>
+                        </executableDependency>
+                        <mainClass>io.aklivity.zilla.manager.internal.ZillaManagerKt</mainClass>
+                        <arguments>
+                            <argument>--launcher-directory</argument>
+                            <argument>${project.basedir}/src/main/docker</argument>
+                            <argument>wrap</argument>
+                        </arguments>
+                    </configuration>
+                </execution>
+
+                <!-- Step 2: Run 'generate-assembly' directly via the manager jar -->
+                <execution>
+                    <id>generate-assembly</id>
+                    <phase>generate-resources</phase>
+                    <goals>
+                        <goal>exec</goal>
+                    </goals>
+                    <configuration>
+                        <executableDependency>
+                            <groupId>${project.groupId}</groupId>
+                            <artifactId>manager</artifactId>
+                        </executableDependency>
+                        <mainClass>io.aklivity.zilla.manager.internal.ZillaManagerKt</mainClass>
+                        <arguments>
+                            <argument>generate-assembly</argument>
+                            <argument>--output</argument>
+                            <argument>${project.basedir}/src/main/docker/assembly.xml</argument>
+                            <argument>--zpm-json</argument>
+                            <argument>${project.basedir}/src/main/docker/zpm.json</argument>
+                        </arguments>
+                    </configuration>
+                </execution>
+
+                <!-- Optional: you can also run other internal java commands if needed -->
+                <execution>
+                    <id>manager-java</id>
+                    <phase>process-sources</phase>
+                    <goals>
+                        <goal>java</goal>
+                    </goals>
+                </execution>
+
+            </executions>
+        </plugin>
         <plugin>
             <groupId>io.fabric8</groupId>
             <artifactId>docker-maven-plugin</artifactId>
