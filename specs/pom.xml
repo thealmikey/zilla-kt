@@ -18,6 +18,7 @@
 
   <modules>
     <module>engine.spec</module>
+      <module>binding-claimcheck.spec</module>
     <module>binding-asyncapi.spec</module>
     <module>binding-echo.spec</module>
     <module>binding-fan.spec</module>
@@ -66,6 +67,11 @@
         <artifactId>engine.spec</artifactId>
         <version>${project.version}</version>
       </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>binding-claimcheck.spec</artifactId>
+            <version>${project.version}</version>
+        </dependency>
       <dependency>
         <groupId>${project.groupId}</groupId>
         <artifactId>binding-echo.spec</artifactId>
