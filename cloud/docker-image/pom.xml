@@ -418,6 +418,7 @@
               <alias>zillali</alias>
               <name>zillali:%v</name>
               <build>
+                  <noCache>true</noCache>
                 <contextDir>${project.basedir}/src/main/docker</contextDir>
                 <tags>
                   <tag>${docker.latest.tag}</tag>
@@ -473,6 +474,7 @@
                   <alias>zilla-alpine</alias>
                   <name>ghcr.io/aklivity/zilla:%v-alpine</name>
                   <build>
+                      <noCache>true</noCache>
                     <dockerFile>alpine.Dockerfile</dockerFile>
                     <tags>
                       <tag>alpine</tag>
