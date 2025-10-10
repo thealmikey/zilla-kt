@@ -15,7 +15,6 @@
  */
 package io.aklivity.zilla.runtime.engine.internal.registry;
 
-import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_WORKER_CAPACITY_LIMIT;
 import static io.aklivity.zilla.runtime.engine.budget.BudgetCreditor.NO_BUDGET_ID;
 import static io.aklivity.zilla.runtime.engine.concurrent.Signaler.NO_CANCEL_ID;
 import static io.aklivity.zilla.runtime.engine.internal.registry.MetricHandlerKind.ORIGIN;
@@ -124,12 +123,8 @@ import io.aklivity.zilla.runtime.engine.internal.layouts.BudgetsLayout;
 import io.aklivity.zilla.runtime.engine.internal.layouts.BufferPoolLayout;
 import io.aklivity.zilla.runtime.engine.internal.layouts.EventsLayout;
 import io.aklivity.zilla.runtime.engine.internal.layouts.StreamsLayout;
-import io.aklivity.zilla.runtime.engine.internal.layouts.metrics.CountersLayout;
-import io.aklivity.zilla.runtime.engine.internal.layouts.metrics.GaugesLayout;
 import io.aklivity.zilla.runtime.engine.internal.layouts.metrics.HistogramsLayout;
-import io.aklivity.zilla.runtime.engine.internal.metrics.EngineWorkersCapacityMetric;
-import io.aklivity.zilla.runtime.engine.internal.metrics.EngineWorkersCountMetric;
-import io.aklivity.zilla.runtime.engine.internal.metrics.EngineWorkersUsageMetric;
+import io.aklivity.zilla.runtime.engine.internal.layouts.metrics.ScalarsLayout;
 import io.aklivity.zilla.runtime.engine.internal.poller.Poller;
 import io.aklivity.zilla.runtime.engine.internal.stream.StreamId;
 import io.aklivity.zilla.runtime.engine.internal.stream.Target;
@@ -226,18 +221,15 @@ public class EngineWorker implements EngineContext, Agent
     private final Path configPath;
     private final AgentRunner runner;
     private final Supplier<IdleStrategy> supplyIdleStrategy;
-    private final EngineBoss boss;
     private final Consumer<Throwable> reporter;
     private final ErrorHandler errorHandler;
-    private final CountersLayout countersLayout;
-    private final GaugesLayout gaugesLayout;
+    private final ScalarsLayout countersLayout;
+    private final ScalarsLayout gaugesLayout;
     private final HistogramsLayout histogramsLayout;
     private final EventsLayout eventsLayout;
     private final Int2ObjectHashMap<String> eventNames;
     private final Supplier<MessageReader> supplyEventReader;
     private final EventFormatterFactory eventFormatterFactory;
-    private final LongSupplier usageMetric;
-    private final boolean readonly;
 
     private long initialId;
     private long promiseId;
@@ -267,31 +259,28 @@ public class EngineWorker implements EngineContext, Agent
         EventFormatterFactory eventFormatterFactory,
         int index,
         boolean readonly,
-        Consumer<NamespaceConfig> process,
-        EngineBoss boss)
+        Consumer<NamespaceConfig> process)
     {
         this.localIndex = index;
         this.config = config;
         this.configPath = Path.of(config.configURI());
         this.labels = labels;
         this.affinityMask = affinityMask;
-        this.readonly = readonly;
 
         this.supplyIdleStrategy = () -> new BackoffIdleStrategy(
                 config.maxSpins(),
                 config.maxYields(),
                 config.minParkNanos(),
                 config.maxParkNanos());
-        this.boss = boss;
 
-        this.countersLayout = new CountersLayout.Builder()
+        this.countersLayout = new ScalarsLayout.Builder()
                 .path(config.directory().resolve(String.format("metrics/counters%d", index)))
                 .capacity(config.countersBufferCapacity())
                 .readonly(readonly)
                 .label("counters")
                 .build();
 
-        this.gaugesLayout = new GaugesLayout.Builder()
+        this.gaugesLayout = new ScalarsLayout.Builder()
                 .path(config.directory().resolve(String.format("metrics/gauges%d", index)))
                 .capacity(config.countersBufferCapacity())
                 .readonly(readonly)
@@ -308,6 +297,12 @@ public class EngineWorker implements EngineContext, Agent
         metricWriterSuppliers.put(COUNTER, countersLayout::supplyWriter);
         metricWriterSuppliers.put(GAUGE, gaugesLayout::supplyWriter);
         metricWriterSuppliers.put(HISTOGRAM, histogramsLayout::supplyWriter);
+
+        if (!readonly)
+        {
+            final int metricId = labels.supplyLabelId("engine.worker.count");
+            supplyMetricWriter(GAUGE, NO_NAMESPACED_ID, metricId).accept(1);
+        }
 
         final StreamsLayout streamsLayout = new StreamsLayout.Builder()
                 .path(config.directory().resolve(String.format("data%d", index)))
@@ -329,7 +324,7 @@ public class EngineWorker implements EngineContext, Agent
 
         this.eventNames = new Int2ObjectHashMap<>();
 
-        this.agentName = String.format("engine/worker#%d", index);
+        this.agentName = String.format("engine/data#%d", index);
         this.streamsLayout = streamsLayout;
         this.bufferPoolLayout = bufferPoolLayout;
         this.runner = new AgentRunner(supplyIdleStrategy.get(), errorHandler, null, this);
@@ -469,7 +464,6 @@ public class EngineWorker implements EngineContext, Agent
         this.exportersById = new Long2ObjectHashMap<>();
         this.supplyEventReader = supplyEventReader;
         this.eventFormatterFactory = eventFormatterFactory;
-        this.usageMetric = supplyGauge(NO_NAMESPACED_ID, labels.supplyLabelId(EngineWorkersUsageMetric.NAME));
     }
 
     public static int indexOfId(
@@ -782,7 +776,7 @@ public class EngineWorker implements EngineContext, Agent
     @Override
     public LongConsumer supplyUtilizationMetric()
     {
-        final int metricId = labels.supplyLabelId(EngineWorkersUsageMetric.NAME);
+        final int metricId = labels.supplyLabelId("engine.worker.utilization");
 
         return supplyMetricWriter(GAUGE, NO_NAMESPACED_ID, metricId);
     }
@@ -818,11 +812,6 @@ public class EngineWorker implements EngineContext, Agent
             EngineConfigWriter writer = new EngineConfigWriter(null);
             System.out.println(writer.write(composite));
         }
-
-        if (localIndex == 0)
-        {
-            boss.attachNow(composite);
-        }
     }
 
     @Override
@@ -833,11 +822,6 @@ public class EngineWorker implements EngineContext, Agent
 
         registry.detachNow(composite);
         writeBindingTypes(registry);
-
-        if (localIndex == 0)
-        {
-            boss.detachNow(composite);
-        }
     }
 
     public void doStart()
@@ -893,26 +877,6 @@ public class EngineWorker implements EngineContext, Agent
     }
 
     @Override
-    public void onStart()
-    {
-        if (!readonly)
-        {
-            int workersMetricId = labels.supplyLabelId(EngineWorkersCountMetric.NAME);
-            LongConsumer recordCount = supplyMetricWriter(GAUGE, NO_NAMESPACED_ID, workersMetricId);
-
-            int capacityMetricId = labels.supplyLabelId(EngineWorkersCapacityMetric.NAME);
-            LongConsumer recordCapacity = supplyGaugeWriter(capacityMetricId);
-
-            int utilizationMetricId = labels.supplyLabelId(EngineWorkersUsageMetric.NAME);
-            LongConsumer recordUtilization = supplyGaugeWriter(utilizationMetricId);
-
-            recordCount.accept(1);
-            recordCapacity.accept(ENGINE_WORKER_CAPACITY_LIMIT.getAsInt(config));
-            recordUtilization.accept(0);
-        }
-    }
-
-    @Override
     public void onClose()
     {
         registry.detachAll();
@@ -958,15 +922,6 @@ public class EngineWorker implements EngineContext, Agent
                     String.format("Some resources not released: %d buffers, %d creditors, %d debitors",
                                   acquiredBuffers, acquiredCreditors, acquiredDebitors));
         }
-
-        if (!readonly)
-        {
-            long usage = usageMetric.getAsLong();
-            if (usage != 0L)
-            {
-                throw new IllegalStateException("Engine worker usage is non-zero: %d".formatted(usage));
-            }
-        }
     }
 
     public void drain()
@@ -995,7 +950,8 @@ public class EngineWorker implements EngineContext, Agent
         assert thread != Thread.currentThread();
 
         NamespaceTask attachTask = registry.attach(namespace);
-        dispatch(attachTask);
+        taskQueue.offer(attachTask);
+        signaler.signalNow(0L, 0L, 0L, supplyTraceId(), SIGNAL_TASK_QUEUED, 0);
 
         if (localIndex == 0)
         {
@@ -1012,7 +968,8 @@ public class EngineWorker implements EngineContext, Agent
         assert thread != Thread.currentThread();
 
         NamespaceTask detachTask = registry.detach(namespace);
-        dispatch(detachTask);
+        taskQueue.offer(detachTask);
+        signaler.signalNow(0L, 0L, 0L, supplyTraceId(), SIGNAL_TASK_QUEUED, 0);
 
         if (localIndex == 0)
         {
@@ -1064,12 +1021,6 @@ public class EngineWorker implements EngineContext, Agent
         return metricGroupsByName.get(metricGroupName).supply(metricName);
     }
 
-    public LongConsumer supplyGaugeWriter(
-        long metricId)
-    {
-        return gaugesLayout.supplyWriter(NO_NAMESPACED_ID, metricId);
-    }
-
     // required for testing
     public LongConsumer supplyCounterWriter(
         long bindingId,
@@ -1104,14 +1055,6 @@ public class EngineWorker implements EngineContext, Agent
     public Clock clock()
     {
         return Clock.systemUTC();
-    }
-
-    @Override
-    public void dispatch(
-        Runnable task)
-    {
-        taskQueue.offer(task);
-        signaler.signalNow(0L, 0L, 0L, supplyTraceId(), SIGNAL_TASK_QUEUED, 0);
     }
 
     private void writeBindingTypes(

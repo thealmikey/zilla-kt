@@ -18,7 +18,6 @@ package io.aklivity.zilla.runtime.engine.binding;
 import java.net.URL;
 
 import io.aklivity.zilla.runtime.engine.EngineContext;
-import io.aklivity.zilla.runtime.engine.EngineController;
 import io.aklivity.zilla.runtime.engine.config.KindConfig;
 
 public interface Binding
@@ -27,12 +26,6 @@ public interface Binding
 
     BindingContext supply(
         EngineContext context);
-
-    default BindingController supply(
-        EngineController controller)
-    {
-        return null;
-    }
 
     default URL type()
     {

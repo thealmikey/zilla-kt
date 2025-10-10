@@ -35,7 +35,6 @@ public final class TestGuardOptionsConfigAdapter implements OptionsConfigAdapter
     private static final String LIFETIME_NAME = "lifetime";
     private static final String CHALLENGE_NAME = "challenge";
     private static final String ROLES_NAME = "roles";
-    private static final String IDENTITY_NAME = "identity";
 
     @Override
     public Kind kind()
@@ -67,11 +66,6 @@ public final class TestGuardOptionsConfigAdapter implements OptionsConfigAdapter
         if (testOptions.challenge != DEFAULT_CHALLENGE_NEVER)
         {
             object.add(CHALLENGE_NAME, testOptions.challenge.toString());
-        }
-
-        if (testOptions.identity != null)
-        {
-            object.add(IDENTITY_NAME, testOptions.identity);
         }
 
         if (testOptions.roles != null &&
@@ -107,11 +101,6 @@ public final class TestGuardOptionsConfigAdapter implements OptionsConfigAdapter
             if (object.containsKey(CHALLENGE_NAME))
             {
                 testOptions.challenge(Duration.parse(object.getString(CHALLENGE_NAME)));
-            }
-
-            if (object.containsKey(IDENTITY_NAME))
-            {
-                testOptions.identity(object.getString(IDENTITY_NAME));
             }
 
             if (object.containsKey(ROLES_NAME))

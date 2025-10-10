@@ -104,7 +104,8 @@ public class EngineMetricsIT
         long[][] gaugeIds = engine.gaugeIds();
 
         // THEN
-        assertThat(gaugeIds[gaugeIds.length - 1], equalTo(new long[]{3L, 7L}));
+        // gaugeIds[0] is coming from test.gauge in server.yaml
+        assertThat(gaugeIds[2], equalTo(new long[]{3L, 7L}));
     }
 
     @Test

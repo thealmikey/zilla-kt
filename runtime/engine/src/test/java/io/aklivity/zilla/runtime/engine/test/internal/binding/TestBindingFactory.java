@@ -16,7 +16,6 @@
 package io.aklivity.zilla.runtime.engine.test.internal.binding;
 
 import static io.aklivity.zilla.runtime.engine.test.internal.binding.config.TestBindingOptionsConfigAdapter.DEFAULT_ASSERTION_SCHEMA;
-import static java.util.Collections.emptyList;
 
 import java.security.KeyStore;
 import java.util.LinkedList;
@@ -28,7 +27,6 @@ import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.collections.Long2ObjectHashMap;
 
-import io.aklivity.zilla.runtime.engine.Configuration;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.binding.BindingHandler;
 import io.aklivity.zilla.runtime.engine.binding.function.MessageConsumer;
@@ -41,7 +39,6 @@ import io.aklivity.zilla.runtime.engine.metrics.Metric;
 import io.aklivity.zilla.runtime.engine.model.ConverterHandler;
 import io.aklivity.zilla.runtime.engine.model.function.ValueConsumer;
 import io.aklivity.zilla.runtime.engine.namespace.NamespacedId;
-import io.aklivity.zilla.runtime.engine.security.Trusted;
 import io.aklivity.zilla.runtime.engine.test.internal.binding.config.TestBindingConfig;
 import io.aklivity.zilla.runtime.engine.test.internal.binding.config.TestBindingOptionsConfig;
 import io.aklivity.zilla.runtime.engine.test.internal.binding.config.TestBindingOptionsConfig.CatalogAssertion;
@@ -86,7 +83,6 @@ final class TestBindingFactory implements BindingHandler
     private final ChallengeFW challengeRO = new ChallengeFW();
     private final ChallengeFW.Builder challengeRW = new ChallengeFW.Builder();
 
-    private final Configuration config;
     private final EngineContext context;
     private final TestEventContext event;
     private final Long2ObjectHashMap<TestBindingConfig> bindings;
@@ -104,10 +100,8 @@ final class TestBindingFactory implements BindingHandler
     private VaultAssertion vaultAssertion;
 
     TestBindingFactory(
-        Configuration config,
         EngineContext context)
     {
-        this.config = config;
         this.context = context;
         this.event = new TestEventContext(context);
         this.bindings = new Long2ObjectHashMap<>();
@@ -321,12 +315,10 @@ final class TestBindingFactory implements BindingHandler
                 }
 
                 String trust = vaultAssertion.trust;
-                boolean trustcacerts = vaultAssertion.trustcacerts;
-                if (trust != null || trustcacerts)
+                if (trust != null)
                 {
-                    KeyStore cacerts = trustcacerts ? Trusted.cacerts(config) : null;
-                    List<String> certRefs = trust != null ? List.of(trust) : emptyList();
-                    vault.initTrust(certRefs, cacerts);
+                    KeyStore cacerts = null;
+                    vault.initTrust(List.of(trust), cacerts);
                 }
             }
 

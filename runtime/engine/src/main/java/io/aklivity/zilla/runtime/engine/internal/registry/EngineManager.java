@@ -38,6 +38,8 @@ import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.agrona.LangUtil;
+
 import io.aklivity.zilla.runtime.engine.EngineConfiguration;
 import io.aklivity.zilla.runtime.engine.binding.Binding;
 import io.aklivity.zilla.runtime.engine.config.BindingConfig;
@@ -80,7 +82,6 @@ public class EngineManager
     private final IntFunction<String> supplyName;
     private final IntFunction<ToIntFunction<KindConfig>> maxWorkers;
     private final Tuning tuning;
-    private final EngineBoss boss;
     private final Collection<EngineWorker> workers;
     private final Consumer<String> logger;
     private final EngineExtContext context;
@@ -101,7 +102,6 @@ public class EngineManager
         IntFunction<String> supplyName,
         IntFunction<ToIntFunction<KindConfig>> maxWorkers,
         Tuning tuning,
-        EngineBoss boss,
         Collection<EngineWorker> workers,
         Consumer<String> logger,
         EngineExtContext context,
@@ -116,7 +116,6 @@ public class EngineManager
         this.supplyName = supplyName;
         this.maxWorkers = maxWorkers;
         this.tuning = tuning;
-        this.boss = boss;
         this.workers = workers;
         this.logger = logger;
         this.context = context;
@@ -239,7 +238,7 @@ public class EngineManager
         }
         catch (Throwable ex)
         {
-            rethrowUnchecked(ex);
+            LangUtil.rethrowUnchecked(ex);
         }
 
         return engine;
@@ -383,7 +382,19 @@ public class EngineManager
             }
             binding.metricIds = metricIds.stream().mapToLong(Long::longValue).toArray();
 
-            long affinity = tuning.affinity(binding.id);
+            long affinity;
+            try {
+                affinity = tuning.affinity(binding.id);
+            }
+            catch (IOException ex) {
+                System.err.printf("[%s] Failed to read affinity for bindingId=%d: %s%n",
+                        System.currentTimeMillis(), binding.id, ex.getMessage());
+                ex.printStackTrace(System.err);
+
+                // escalate as unchecked
+                throw new RuntimeException("Error reading affinity for bindingId=" + binding.id, ex);
+            }
+
 
             final long maxbits = maxWorkers.apply(binding.type.intern().hashCode()).applyAsInt(binding.kind);
             for (int bitindex = 0; Long.bitCount(affinity) > maxbits; bitindex++)
@@ -442,8 +453,6 @@ public class EngineManager
     private void register(
         NamespaceConfig namespace)
     {
-        boss.attach(namespace).join();
-
         workers.stream()
             .map(w -> w.attach(namespace))
             .reduce(CompletableFuture::allOf)
@@ -455,8 +464,6 @@ public class EngineManager
     {
         if (namespace != null)
         {
-            boss.detach(namespace).join();
-
             workers.stream()
                 .map(w -> w.detach(namespace))
                 .reduce(CompletableFuture::allOf)

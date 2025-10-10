@@ -16,8 +16,6 @@
 package io.aklivity.zilla.runtime.engine.internal;
 
 import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_DRAIN_ON_CLOSE;
-import static io.aklivity.zilla.runtime.filesystem.http.HttpFilesystemEnvironment.AUTHORIZATION_PROPERTY_NAME;
-import static io.aklivity.zilla.runtime.filesystem.http.HttpFilesystemEnvironment.POLL_INTERVAL_PROPERTY_NAME;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.rules.RuleChain.outerRule;
 
@@ -41,6 +39,8 @@ import io.aklivity.zilla.runtime.engine.test.annotation.Configure;
 @Ignore
 public class ReconfigureHttpIT
 {
+    public static final String ENGINE_CONFIG_POLL_INTERVAL_SECONDS = "zilla.engine.config.poll.interval.seconds";
+
     private final K3poRule k3po = new K3poRule()
         .addScriptRoot("net", "io/aklivity/zilla/specs/engine/streams/network")
         .addScriptRoot("app", "io/aklivity/zilla/specs/engine/streams/application");
@@ -70,7 +70,7 @@ public class ReconfigureHttpIT
     }
 
     @Test
-    @Configure(name = POLL_INTERVAL_PROPERTY_NAME, value = "0")
+    @Configure(name = ENGINE_CONFIG_POLL_INTERVAL_SECONDS, value = "0")
     @Configuration("http://localhost:8080/zilla.yaml")
     @Specification({
         "${app}/reconfigure.create.via.http/server",
@@ -85,22 +85,7 @@ public class ReconfigureHttpIT
     }
 
     @Test
-    @Configure(name = AUTHORIZATION_PROPERTY_NAME, value = "Basic YWRtaW46dGVzdA==")
-    @Configuration("http://localhost:8080/zilla.yaml")
-    @Specification({
-        "${app}/reconfigure.create.via.http.basic.auth/server",
-        "${net}/reconfigure.create.via.http/client"
-    })
-    public void shouldReconfigureWhenCreatedViaHttpBasicAuth() throws Exception
-    {
-        k3po.start();
-        EngineTest.TestEngineExt.registerLatch.await();
-        k3po.notifyBarrier("CONFIG_CREATED");
-        k3po.finish();
-    }
-
-    @Test
-    @Configure(name = POLL_INTERVAL_PROPERTY_NAME, value = "0")
+    @Configure(name = ENGINE_CONFIG_POLL_INTERVAL_SECONDS, value = "0")
     @Configuration("http://localhost:8080/zilla.yaml")
     @Specification({
         "${app}/reconfigure.delete.via.http/server",
@@ -115,7 +100,7 @@ public class ReconfigureHttpIT
     }
 
     @Test
-    @Configure(name = POLL_INTERVAL_PROPERTY_NAME, value = "0")
+    @Configure(name = ENGINE_CONFIG_POLL_INTERVAL_SECONDS, value = "0")
     @Configuration("http://localhost:8080/zilla.yaml")
     @Specification({
         "${app}/reconfigure.modify.via.http/server",
@@ -131,7 +116,7 @@ public class ReconfigureHttpIT
     }
 
     @Test
-    @Configure(name = POLL_INTERVAL_PROPERTY_NAME, value = "0")
+    @Configure(name = ENGINE_CONFIG_POLL_INTERVAL_SECONDS, value = "0")
     @Configuration("http://localhost:8080/zilla.yaml")
     @Specification({
         "${app}/reconfigure.modify.no.etag.via.http/server",
@@ -147,7 +132,7 @@ public class ReconfigureHttpIT
     }
 
     @Test
-    @Configure(name = POLL_INTERVAL_PROPERTY_NAME, value = "0")
+    @Configure(name = ENGINE_CONFIG_POLL_INTERVAL_SECONDS, value = "0")
     @Configuration("http://localhost:8080/zilla.yaml")
     @Specification({
         "${app}/reconfigure.server.error.via.http/server",

@@ -16,17 +16,12 @@
 package io.aklivity.zilla.runtime.engine;
 
 import static io.aklivity.zilla.runtime.engine.internal.layouts.metrics.HistogramsLayout.BUCKETS;
-import static io.aklivity.zilla.runtime.engine.namespace.NamespacedId.NO_LOCAL_ID;
-import static io.aklivity.zilla.runtime.engine.namespace.NamespacedId.NO_NAMESPACE_ID;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.stream.Collectors.toList;
 import static org.agrona.LangUtil.rethrowUnchecked;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.URL;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -65,7 +60,6 @@ import io.aklivity.zilla.runtime.engine.internal.LabelManager;
 import io.aklivity.zilla.runtime.engine.internal.Tuning;
 import io.aklivity.zilla.runtime.engine.internal.event.EngineEventContext;
 import io.aklivity.zilla.runtime.engine.internal.layouts.EventsLayout;
-import io.aklivity.zilla.runtime.engine.internal.registry.EngineBoss;
 import io.aklivity.zilla.runtime.engine.internal.registry.EngineManager;
 import io.aklivity.zilla.runtime.engine.internal.registry.EngineWorker;
 import io.aklivity.zilla.runtime.engine.internal.types.event.EventFW;
@@ -89,14 +83,11 @@ public final class Engine implements Collector, AutoCloseable
     private final ThreadFactory factory;
 
     private final List<EngineWorker> workers;
-    private final EngineBoss boss;
     private final boolean readonly;
     private final EngineConfiguration config;
     private final EngineManager manager;
 
     private final EventsLayout eventsLayout;
-
-    private FileSystem fileSystem = null;
 
     Engine(
         EngineConfiguration config,
@@ -162,29 +153,26 @@ public final class Engine implements Collector, AutoCloseable
                 .capacity(config.eventsBufferCapacity())
                 .build();
 
-        this.boss = new EngineBoss(config, errorHandler, bindings);
-
-        final URI configURI = config.configURI();
-
-        if (configURI.getScheme().startsWith("http"))
-        {
-            try
-            {
-                fileSystem = FileSystems.newFileSystem(configURI, config.asMap());
-            }
-            catch (IOException ex)
-            {
-                rethrowUnchecked(ex);
-            }
-        }
-
         List<EngineWorker> workers = new ArrayList<>(workerCount);
         for (int workerIndex = 0; workerIndex < workerCount; workerIndex++)
         {
             EngineWorker worker =
-                new EngineWorker(config, tasks, labels, errorHandler, tuning::affinity, bindings, exporters,
-                    guards, vaults, catalogs, models, metricGroups, this, this::supplyEventReader,
-                    eventFormatterFactory, workerIndex, readonly, this::process, boss);
+                    new EngineWorker(config, tasks, labels, errorHandler,
+                            id -> {
+                                try {
+                                    return tuning.affinity(id);   // ✅ normal case
+                                }
+                                catch (IOException ex) {
+                                    // ✅ Print full stack trace (or route to errorHandler)
+                                    ex.printStackTrace();
+
+                                    // ✅ Re-throw unchecked, but keep compiler happy
+                                    throw new RuntimeException(ex);
+                                }
+                            },
+                            bindings, exporters, guards, vaults, catalogs, models, metricGroups,
+                            this, this::supplyEventReader, eventFormatterFactory, workerIndex, readonly, this::process);
+
             workers.add(worker);
         }
         this.workers = workers;
@@ -221,7 +209,6 @@ public final class Engine implements Collector, AutoCloseable
             labels::lookupLabel,
             maxWorkers,
             tuning,
-            boss,
             workers,
             logger,
             context,
@@ -260,8 +247,6 @@ public final class Engine implements Collector, AutoCloseable
             worker.doStart();
         }
 
-        boss.doStart();
-
         // ignore the config file in read-only mode; no config will be read so no namespaces, bindings, etc. will be attached
         if (!readonly)
         {
@@ -293,15 +278,6 @@ public final class Engine implements Collector, AutoCloseable
             }
         }
 
-        try
-        {
-            boss.doClose();
-        }
-        catch (Throwable ex)
-        {
-            errors.add(ex);
-        }
-
         if (tasks != null)
         {
             tasks.shutdownNow();
@@ -316,11 +292,6 @@ public final class Engine implements Collector, AutoCloseable
             final Throwable t = errors.get(0);
             errors.stream().filter(x -> x != t).forEach(x -> t.addSuppressed(x));
             rethrowUnchecked(t);
-        }
-
-        if (fileSystem != null)
-        {
-            fileSystem.close();
         }
     }
 
@@ -611,24 +582,12 @@ public final class Engine implements Collector, AutoCloseable
             String binding,
             String metric)
         {
-            int namespaceId = namespace != null ? supplyLabelId.applyAsInt(namespace) : NO_NAMESPACE_ID;
-            int bindingId = binding != null ? supplyLabelId.applyAsInt(binding) : NO_LOCAL_ID;
+            int namespaceId = supplyLabelId.applyAsInt(namespace);
+            int bindingId = supplyLabelId.applyAsInt(binding);
             int metricId = supplyLabelId.applyAsInt(metric);
-            long namespacedId = NamespacedId.id(namespaceId, bindingId);
-            return Engine.this.counter(namespacedId, metricId);
-        }
-
-        @Override
-        public LongSupplier gauge(
-            String namespace,
-            String binding,
-            String metric)
-        {
-            int namespaceId = namespace != null ? supplyLabelId.applyAsInt(namespace) : NO_NAMESPACE_ID;
-            int bindingId = binding != null ? supplyLabelId.applyAsInt(binding) : NO_LOCAL_ID;
-            int metricId = supplyLabelId.applyAsInt(metric);
-            long namespacedId = NamespacedId.id(namespaceId, bindingId);
-            return Engine.this.gauge(namespacedId, metricId);
+            long namespacedBindingId = NamespacedId.id(namespaceId, bindingId);
+            long namespacedMetricId = NamespacedId.id(namespaceId, metricId);
+            return Engine.this.counter(namespacedBindingId, namespacedMetricId);
         }
 
         // required for testing
@@ -638,11 +597,12 @@ public final class Engine implements Collector, AutoCloseable
             String metric,
             int core)
         {
-            int namespaceId = namespace != null ? supplyLabelId.applyAsInt(namespace) : NO_NAMESPACE_ID;
-            int bindingId = binding != null ? supplyLabelId.applyAsInt(binding) : NO_LOCAL_ID;
+            int namespaceId = supplyLabelId.applyAsInt(namespace);
+            int bindingId = supplyLabelId.applyAsInt(binding);
             int metricId = supplyLabelId.applyAsInt(metric);
-            long namespacedId = NamespacedId.id(namespaceId, bindingId);
-            return Engine.this.counterWriter(namespacedId, metricId, core);
+            long namespacedBindingId = NamespacedId.id(namespaceId, bindingId);
+            long namespacedMetricId = NamespacedId.id(namespaceId, metricId);
+            return Engine.this.counterWriter(namespacedBindingId, namespacedMetricId, core);
         }
     }
 }

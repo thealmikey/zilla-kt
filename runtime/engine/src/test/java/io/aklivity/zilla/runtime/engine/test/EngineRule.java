@@ -23,7 +23,6 @@ import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_ROUTED
 import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_SYNTHETIC_ABORT;
 import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_WORKERS;
 import static io.aklivity.zilla.runtime.engine.EngineConfiguration.ENGINE_WORKER_CAPACITY;
-import static io.aklivity.zilla.runtime.engine.namespace.NamespacedId.NO_NAMESPACED_ID;
 import static java.nio.file.FileVisitOption.FOLLOW_LINKS;
 import static java.nio.file.Files.exists;
 import static java.util.Collections.synchronizedList;
@@ -60,7 +59,6 @@ import io.aklivity.zilla.runtime.engine.EngineBuilder;
 import io.aklivity.zilla.runtime.engine.EngineConfiguration;
 import io.aklivity.zilla.runtime.engine.binding.Binding;
 import io.aklivity.zilla.runtime.engine.ext.EngineExtContext;
-import io.aklivity.zilla.runtime.engine.internal.metrics.EngineWorkersUsageMetric;
 import io.aklivity.zilla.runtime.engine.test.annotation.Configuration;
 import io.aklivity.zilla.runtime.engine.test.annotation.Configure;
 
@@ -69,11 +67,10 @@ public final class EngineRule implements TestRule
     // needed by test annotations
     public static final String ENGINE_BUFFER_POOL_CAPACITY_NAME = "zilla.engine.buffer.pool.capacity";
     public static final String ENGINE_BUFFER_SLOT_CAPACITY_NAME = "zilla.engine.buffer.slot.capacity";
+    public static final String ENGINE_CONFIG_URL_NAME = "zilla.engine.config.url";
     public static final String ENGINE_CACERTS_STORE_TYPE_NAME = "zilla.engine.cacerts.store.type";
     public static final String ENGINE_CACERTS_STORE_NAME = "zilla.engine.cacerts.store";
     public static final String ENGINE_CACERTS_STORE_PASS_NAME = "zilla.engine.cacerts.store.pass";
-    public static final String ENGINE_CONFIG_URL_NAME = "zilla.engine.config.url";
-    public static final String ENGINE_WORKER_CAPACITY_NAME = "zilla.engine.worker.capacity";
 
     private static final long EXTERNAL_AFFINITY_MASK = 1L << (Long.SIZE - 1);
     private static final Pattern DATA_FILENAME_PATTERN = Pattern.compile("data\\d+");
@@ -86,7 +83,6 @@ public final class EngineRule implements TestRule
     private EngineConfiguration configuration;
     private String configRoot;
     private Predicate<String> exceptions;
-    private boolean interruptible;
     private boolean clean;
 
     public EngineRule()
@@ -94,7 +90,6 @@ public final class EngineRule implements TestRule
         this.builder = Engine.builder();
         this.properties = new Properties();
         this.exceptions = m -> false;
-        this.interruptible = true;
 
         configure(ENGINE_DRAIN_ON_CLOSE, true);
         configure(ENGINE_SYNTHETIC_ABORT, true);
@@ -158,13 +153,6 @@ public final class EngineRule implements TestRule
         Predicate<String> exceptions)
     {
         this.exceptions = exceptions;
-        return this;
-    }
-
-    public EngineRule interruptible(
-        boolean interruptible)
-    {
-        this.interruptible = interruptible;
         return this;
     }
 
@@ -256,11 +244,6 @@ public final class EngineRule implements TestRule
         return engine.context().counterWriter(namespace, binding, metric, core);
     }
 
-    public LongSupplier usage()
-    {
-        return gauge(NO_NAMESPACED_ID, supplyLabelId(EngineWorkersUsageMetric.NAME));
-    }
-
     public int supplyLabelId(
         String label)
     {
@@ -340,12 +323,9 @@ public final class EngineRule implements TestRule
                 final List<Throwable> errors = synchronizedList(new ArrayList<>());
                 final ErrorHandler errorHandler = ex ->
                 {
+                    ex.printStackTrace();
                     errors.add(ex);
-
-                    if (interruptible)
-                    {
-                        baseThread.interrupt();
-                    }
+                    baseThread.interrupt();
                 };
 
                 FileSystem fs = null;
@@ -360,6 +340,10 @@ public final class EngineRule implements TestRule
                             ).toUri().toString();
                     URI jarURI = new URI("jar", jarLocation, null);
                     fs = FileSystems.newFileSystem(jarURI, Map.of());
+                    break;
+                case "http":
+                    final String pollInterval = String.format("PT%dS", config.configPollIntervalSeconds());
+                    fs = FileSystems.newFileSystem(configURI, Map.of("zilla.filesystem.http.poll.interval", pollInterval));
                     break;
                 }
 

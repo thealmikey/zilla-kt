@@ -36,7 +36,7 @@ import org.mockito.quality.Strictness;
 import io.aklivity.zilla.runtime.engine.config.ConfigAdapterContext;
 import io.aklivity.zilla.runtime.engine.config.KindConfig;
 
-public class KindConfigAdapterTest
+public class RoleConfigAdapterTest
 {
     @Rule
     public MockitoRule rule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
@@ -50,12 +50,12 @@ public class KindConfigAdapterTest
     public void initJson()
     {
         JsonbConfig config = new JsonbConfig()
-            .withAdapters(new KindAdapter(context));
+                .withAdapters(new KindAdapter(context));
         jsonb = JsonbBuilder.create(config);
     }
 
     @Test
-    public void shouldReadKind()
+    public void shouldReadRole()
     {
         String text = "\"server\"";
 
@@ -66,7 +66,7 @@ public class KindConfigAdapterTest
     }
 
     @Test
-    public void shouldWriteKind()
+    public void shouldWriteRole()
     {
         String text = jsonb.toJson(SERVER);
 

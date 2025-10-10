@@ -15,7 +15,6 @@
  */
 package io.aklivity.zilla.runtime.engine.test.internal.binding;
 
-import io.aklivity.zilla.runtime.engine.Configuration;
 import io.aklivity.zilla.runtime.engine.EngineContext;
 import io.aklivity.zilla.runtime.engine.binding.BindingContext;
 import io.aklivity.zilla.runtime.engine.binding.BindingHandler;
@@ -26,10 +25,9 @@ final class TestBindingContext implements BindingContext
     private final TestBindingFactory factory;
 
     TestBindingContext(
-        Configuration config,
         EngineContext context)
     {
-        factory = new TestBindingFactory(config, context);
+        factory = new TestBindingFactory(context);
     }
 
     @Override

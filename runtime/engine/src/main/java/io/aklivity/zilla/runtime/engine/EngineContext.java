@@ -185,10 +185,4 @@ public interface EngineContext
     MessageReader supplyEventReader();
 
     Clock clock();
-
-    default void dispatch(
-        Runnable task)
-    {
-        task.run();
-    }
 }

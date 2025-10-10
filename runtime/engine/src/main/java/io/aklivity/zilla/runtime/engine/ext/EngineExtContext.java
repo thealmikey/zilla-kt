@@ -30,9 +30,4 @@ public interface EngineExtContext
         String namespace,
         String binding,
         String metric);
-
-    LongSupplier gauge(
-        String namespace,
-        String binding,
-        String metric);
 }

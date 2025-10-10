@@ -104,18 +104,15 @@ public final class TestBindingOptionsConfig extends OptionsConfig
         public final String key;
         public final String signer;
         public final String trust;
-        public final boolean trustcacerts;
 
         public VaultAssertion(
             String key,
             String signer,
-            String trust,
-            boolean trustcacerts)
+            String trust)
         {
             this.key = key;
             this.signer = signer;
             this.trust = trust;
-            this.trustcacerts = trustcacerts;
         }
     }
 

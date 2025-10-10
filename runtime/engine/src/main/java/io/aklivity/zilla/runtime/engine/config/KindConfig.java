@@ -20,7 +20,6 @@ public enum KindConfig
     SERVER,
     CLIENT,
     PROXY,
-    REMOTE_CLIENT,
     REMOTE_SERVER,
     CACHE_CLIENT,
     CACHE_SERVER

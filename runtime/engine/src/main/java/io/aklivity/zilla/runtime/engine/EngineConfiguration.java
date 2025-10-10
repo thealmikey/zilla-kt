@@ -43,7 +43,6 @@ import org.agrona.concurrent.ringbuffer.RingBufferDescriptor;
 import com.sun.management.OperatingSystemMXBean;
 
 import io.aklivity.zilla.runtime.engine.internal.layouts.BudgetsLayout;
-import io.aklivity.zilla.runtime.engine.security.RevocationStrategy;
 
 public class EngineConfiguration extends Configuration
 {
@@ -61,8 +60,6 @@ public class EngineConfiguration extends Configuration
     public static final PropertyDef<Path> ENGINE_CACHE_DIRECTORY;
     public static final PropertyDef<HostResolver> ENGINE_HOST_RESOLVER;
     public static final IntPropertyDef ENGINE_WORKER_CAPACITY;
-    public static final IntPropertyDef ENGINE_WORKER_CAPACITY_LIMIT;
-    public static final BooleanPropertyDef ENGINE_WORKER_CAPACITY_UNBOUNDED;
     public static final DoublePropertyDef ENGINE_MEMORY_PERCENTAGE;
     public static final DoublePropertyDef ENGINE_DISK_PERCENTAGE;
     public static final IntPropertyDef ENGINE_BUFFER_POOL_CAPACITY;
@@ -94,7 +91,6 @@ public class EngineConfiguration extends Configuration
     public static final PropertyDef<String> ENGINE_CACERTS_STORE;
     public static final PropertyDef<String> ENGINE_CACERTS_STORE_PASS;
     public static final PropertyDef<ErrorReporter> ENGINE_ERROR_REPORTER;
-    public static final PropertyDef<RevocationStrategy> ENGINE_CERTIFICATE_REVOCATION_STRATEGY;
 
     private static final ConfigurationDef ENGINE_CONFIG;
 
@@ -114,9 +110,7 @@ public class EngineConfiguration extends Configuration
                 EngineConfiguration::decodeHostResolver, EngineConfiguration::defaultHostResolver);
         ENGINE_MEMORY_PERCENTAGE = config.property("memory.percentage", 0.25);
         ENGINE_DISK_PERCENTAGE = config.property("disk.percentage", 0.75);
-        ENGINE_WORKER_CAPACITY = config.property("worker.capacity", EngineConfiguration::defaultWorkerCapacity);
-        ENGINE_WORKER_CAPACITY_UNBOUNDED = config.property("worker.capacity.unbounded", false);
-        ENGINE_WORKER_CAPACITY_LIMIT = config.property("worker.capacity.limit", EngineConfiguration::defaultWorkerCapacityLimit);
+        ENGINE_WORKER_CAPACITY = config.property("worker.capacity", EngineConfiguration::defaultWorkersCapacity);
         ENGINE_BUFFER_POOL_CAPACITY = config.property("buffer.pool.capacity", EngineConfiguration::defaultBufferPoolCapacity);
         ENGINE_BUFFER_SLOT_CAPACITY = config.property("buffer.slot.capacity", 32 * 1024);
         ENGINE_STREAMS_BUFFER_CAPACITY = config.property("streams.buffer.capacity",
@@ -149,8 +143,6 @@ public class EngineConfiguration extends Configuration
         ENGINE_CACERTS_STORE_PASS = config.property("cacerts.store.pass");
         ENGINE_ERROR_REPORTER = config.property(ErrorReporter.class, "error.reporter",
             EngineConfiguration::decodeErrorReporter, EngineConfiguration::defaultErrorReporter);
-        ENGINE_CERTIFICATE_REVOCATION_STRATEGY = config.property(RevocationStrategy.class, "certificate.revocation.strategy",
-            EngineConfiguration::decodeRevocationStrategy, RevocationStrategy.NONE);
         ENGINE_CONFIG = config;
     }
 
@@ -384,7 +376,7 @@ public class EngineConfiguration extends Configuration
         return BudgetsLayout.SIZEOF_BUDGET_ENTRY * ENGINE_WORKER_CAPACITY.getAsInt(config);
     }
 
-    private static int defaultWorkerCapacity(
+    private static int defaultWorkersCapacity(
         Configuration config)
     {
         OperatingSystemMXBean osBean = (OperatingSystemMXBean) getOperatingSystemMXBean();
@@ -409,7 +401,7 @@ public class EngineConfiguration extends Configuration
         int budgetsEntrySize = BudgetsLayout.SIZEOF_BUDGET_ENTRY;
         int bufferPoolEntrySize = bufferSlotSize + Long.BYTES;
         int streamsEntrySize = bufferSlotSize;
-        int aggregateEntrySize = bufferPoolEntrySize + budgetsEntrySize + streamsEntrySize;
+        int aggregateEntrySize = bufferSlotSize + budgetsEntrySize + streamsEntrySize;
 
         int bufferPoolMetadataSize = Integer.BYTES;
         int budgetsMetadataSize = 0;
@@ -419,9 +411,9 @@ public class EngineConfiguration extends Configuration
         long workerEntriesMemory = workerMemory - eventsBufferSize - aggregateMetadataSize;
         long workerEntriesCount = workerEntriesMemory / aggregateEntrySize;
 
-        long bufferPoolMaxSize = min(bufferPoolEntrySize * workerEntriesCount, Integer.MAX_VALUE);
-        long budgetsMaxSize = min(budgetsEntrySize * workerEntriesCount, Integer.MAX_VALUE);
-        long streamsMaxSize = min(streamsEntrySize * workerEntriesCount, Integer.MAX_VALUE);
+        long bufferPoolMaxSize = min(bufferPoolEntrySize * workerEntriesCount + bufferPoolMetadataSize, Integer.MAX_VALUE);
+        long budgetsMaxSize = min(budgetsEntrySize * workerEntriesCount + budgetsMetadataSize, Integer.MAX_VALUE);
+        long streamsMaxSize = min(streamsEntrySize * workerEntriesCount + streamsMetadataSize, Integer.MAX_VALUE);
 
         assert bufferPoolMaxSize + budgetsMaxSize + streamsMaxSize <= workerEntriesMemory;
 
@@ -432,14 +424,6 @@ public class EngineConfiguration extends Configuration
         int newWorkersCapacity = Integer.highestOneBit(min(min(bufferPoolMaxCapacity, budgetsMaxCapacity), streamsMaxCapacity));
 
         return newWorkersCapacity;
-    }
-
-    private static int defaultWorkerCapacityLimit(
-        Configuration config)
-    {
-        return ENGINE_WORKER_CAPACITY_UNBOUNDED.get(config)
-            ? Integer.MAX_VALUE
-            : ENGINE_WORKER_CAPACITY.get(config);
     }
 
     private static URL configURL(
@@ -622,11 +606,5 @@ public class EngineConfiguration extends Configuration
         }
 
         return reporter;
-    }
-
-    private static RevocationStrategy decodeRevocationStrategy(
-        String value)
-    {
-        return RevocationStrategy.valueOf(value.toUpperCase());
     }
 }

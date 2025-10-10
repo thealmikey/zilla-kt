@@ -54,7 +54,6 @@ public final class TestBindingOptionsConfigAdapter implements OptionsConfigAdapt
     private static final String VAULT_KEY_NAME = "key";
     private static final String VAULT_SIGNER_NAME = "signer";
     private static final String VAULT_TRUST_NAME = "trust";
-    private static final String VAULT_TRUSTCACERTS_NAME = "trustcacerts";
     private static final String METRICS_NAME = "metrics";
     private static final String NAME_NAME = "name";
     private static final String KIND_NAME = "kind";
@@ -140,11 +139,6 @@ public final class TestBindingOptionsConfigAdapter implements OptionsConfigAdapt
                     .add(VAULT_KEY_NAME, v.key)
                     .add(VAULT_SIGNER_NAME, v.signer)
                     .add(VAULT_TRUST_NAME, v.trust);
-
-                if (v.trustcacerts ^ v.trust != null)
-                {
-                    assertion.add(VAULT_TRUSTCACERTS_NAME, v.trustcacerts);
-                }
 
                 assertions.add(VAULT_NAME, assertion);
             }
@@ -246,12 +240,10 @@ public final class TestBindingOptionsConfigAdapter implements OptionsConfigAdapt
                 if (assertionsJson.containsKey(VAULT_NAME))
                 {
                     JsonObject vaultJson = assertionsJson.getJsonObject(VAULT_NAME);
-
                     testOptions.vaultAssertion(new TestBindingOptionsConfig.VaultAssertion(
-                        vaultJson.getString(VAULT_KEY_NAME, null),
-                        vaultJson.getString(VAULT_SIGNER_NAME, null),
-                        vaultJson.getString(VAULT_TRUST_NAME, null),
-                        vaultJson.getBoolean(VAULT_TRUSTCACERTS_NAME, false)));
+                        vaultJson.containsKey(VAULT_KEY_NAME) ? vaultJson.getString(VAULT_KEY_NAME) : null,
+                        vaultJson.containsKey(VAULT_SIGNER_NAME) ? vaultJson.getString(VAULT_SIGNER_NAME) : null,
+                        vaultJson.containsKey(VAULT_TRUST_NAME) ? vaultJson.getString(VAULT_TRUST_NAME) : null));
                 }
             }
 
