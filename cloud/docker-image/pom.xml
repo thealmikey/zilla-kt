@@ -409,7 +409,7 @@
       <plugin>
         <groupId>io.fabric8</groupId>
         <artifactId>docker-maven-plugin</artifactId>
-        <version>0.45.0</version>
+        <version>0.46.0</version>
         <configuration>
             <dockerHost>unix://${user.home}/.docker/desktop/docker.sock</dockerHost>
           <filter>${*}</filter>
