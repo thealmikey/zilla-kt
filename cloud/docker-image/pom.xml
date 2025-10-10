@@ -406,50 +406,49 @@
           </execution>
         </executions>
       </plugin>
-      <plugin>
-        <groupId>io.fabric8</groupId>
-        <artifactId>docker-maven-plugin</artifactId>
-        <version>0.45.0</version>
-        <configuration>
-            <dockerHost>unix://${user.home}/.docker/desktop/docker.sock</dockerHost>
-          <filter>${*}</filter>
-          <images combine.children="append">
-            <image>
-              <alias>zillali</alias>
-              <name>zillali:%v</name>
-              <build>
-                  <noCache>true</noCache>
-                <contextDir>${project.basedir}/src/main/docker</contextDir>
-                <tags>
-                  <tag>${docker.latest.tag}</tag>
-                </tags>
-                <buildx>
-                  <platforms>
-                    <platform>linux/amd64</platform>
-                    <platform>linux/arm64</platform>
-                  </platforms>
-                  <attestations>
-                    <provenance>false</provenance>
-                  </attestations>
-                </buildx>
-                <assemblies>
-                  <assembly>
-                    <descriptor>assembly.xml</descriptor>
-                  </assembly>
-                </assemblies>
-              </build>
-            </image>
-          </images>
-        </configuration>
-        <executions>
-          <execution>
-            <goals>
-              <goal>build</goal>
-              <goal>push</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
+        <plugin>
+            <groupId>io.fabric8</groupId>
+            <artifactId>docker-maven-plugin</artifactId>
+            <version>0.45.0</version>
+            <configuration>
+                <dockerHost>unix://${user.home}/.docker/desktop/docker.sock</dockerHost>
+                <filter>${*}</filter>
+                <images combine.children="append">
+                    <image>
+                        <alias>zillali</alias>
+                        <name>ghcr.io/YOUR_USERNAME/zillali:%v</name> <!-- Your registry -->
+                        <build>
+                            <noCache>true</noCache>
+                            <contextDir>${project.basedir}/src/main/docker</contextDir>
+                            <tags>
+                                <tag>${docker.latest.tag}</tag> <!-- Will use "feature" in develop profile -->
+                            </tags>
+                            <buildx>
+                                <platforms>
+                                    <platform>linux/amd64</platform>
+                                </platforms>
+                                <attestations>
+                                    <provenance>false</provenance>
+                                </attestations>
+                            </buildx>
+                            <assemblies>
+                                <assembly>
+                                    <descriptor>assembly.xml</descriptor>
+                                </assembly>
+                            </assemblies>
+                        </build>
+                    </image>
+                </images>
+            </configuration>
+            <executions>
+                <execution>
+                    <goals>
+                        <goal>build</goal>
+                        <goal>push</goal>
+                    </goals>
+                </execution>
+            </executions>
+        </plugin>
     </plugins>
   </build>
 

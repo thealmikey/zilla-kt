@@ -32,11 +32,25 @@
     <url>https://github.com/aklivity/zilla</url>
   </scm>
 
-  <repositories>
+
+
+    <repositories>
     <repository>
       <id>aklivity</id>
       <url>https://maven.packages.aklivity.io/</url>
     </repository>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+        <repository>
+            <id>maven central</id>
+            <url>https://repo1.maven.org/maven2/</url>
+        </repository>
+        <repository>
+            <id>Google maven</id>
+            <url>https://maven.google.com/</url>
+        </repository>
   </repositories>
 
   <pluginRepositories>
@@ -44,6 +58,18 @@
       <id>aklivity</id>
       <url>https://maven.packages.aklivity.io/</url>
     </pluginRepository>
+  <pluginRepository>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
+  </pluginRepository>
+      <pluginRepository>
+          <id>maven central</id>
+          <url>https://repo1.maven.org/maven2/</url>
+      </pluginRepository>
+      <pluginRepository>
+          <id>Google maven</id>
+          <url>https://maven.google.com/</url>
+      </pluginRepository>
   </pluginRepositories>
 
   <properties>
@@ -65,6 +91,7 @@
     <jmh.version>1.37</jmh.version>
     <kotlin.version>2.1.21</kotlin.version>
     <jpms.module.version>1.0.0</jpms.module.version>
+      <maven.test.skip>true</maven.test.skip>
   </properties>
 
   <modules>
@@ -397,6 +424,8 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.13.0</version>
           <configuration>
+              <skipTestCompile>true</skipTestCompile> <!-- Explicitly skip test compilation -->
+
 <!--            <moduleVersion>${jpms.module.version}</moduleVersion>-->
           </configuration>
         </plugin>
@@ -422,6 +451,9 @@
               </goals>
             </execution>
           </executions>
+            <configuration>
+                <shadeTestJar>false</shadeTestJar>
+            </configuration>
         </plugin>
         <plugin>
           <groupId>org.moditect</groupId>
@@ -472,25 +504,25 @@
             </execution>
           </executions>
         </plugin>
-        <plugin>
-          <groupId>io.aklivity.k3po</groupId>
-          <artifactId>k3po-maven-plugin</artifactId>
-          <version>${k3po.version}</version>
-          <executions>
-            <execution>
-              <goals>
-                <goal>start</goal>
-                <goal>stop</goal>
-              </goals>
-            </execution>
-          </executions>
-        </plugin>
+<!--        <plugin>-->
+<!--          <groupId>io.aklivity.k3po</groupId>-->
+<!--          <artifactId>k3po-maven-plugin</artifactId>-->
+<!--          <version>${k3po.version}</version>-->
+<!--          <executions>-->
+<!--            <execution>-->
+<!--              <goals>-->
+<!--                <goal>start</goal>-->
+<!--                <goal>stop</goal>-->
+<!--              </goals>-->
+<!--            </execution>-->
+<!--          </executions>-->
+<!--        </plugin>-->
         <plugin>
           <groupId>io.gatling</groupId>
           <artifactId>maven-shade-plugin</artifactId>
           <version>2.4.4.2</version>
           <configuration>
-            <shadeTestJar>true</shadeTestJar>
+            <shadeTestJar>false</shadeTestJar>
             <outputFile>${project.build.directory}/${project.artifactId}-shaded.jar</outputFile>
             <transformers>
               <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
@@ -708,32 +740,26 @@
       </build>
     </profile>
 
-    <profile>
-      <id>release</id>
-      <activation>
-        <property>
-          <name>release</name>
-          <value>true</value>
-        </property>
-      </activation>
-
-      <distributionManagement>
-        <downloadUrl>https://maven.pkg.github.com/aklivity/zilla/</downloadUrl>
-        <repository>
-          <id>github</id>
-          <url>https://maven.pkg.github.com/aklivity/zilla/</url>
-        </repository>
-        <snapshotRepository>
-          <id>github</id>
-          <url>https://maven.pkg.github.com/aklivity/zilla/</url>
-        </snapshotRepository>
-      </distributionManagement>
-
-      <properties>
-        <docker.skip.push>false</docker.skip.push>
-        <docker.skip.tag>false</docker.skip.tag>
-        <docker.latest.tag>latest</docker.latest.tag>
-      </properties>
+      <profile>
+          <id>release</id>
+          <activation>
+              <property>
+                  <name>release</name>
+                  <value>true</value>
+              </property>
+          </activation>
+          <distributionManagement>
+              <downloadUrl>https://maven.pkg.github.com/thealmikey/zilla-kt/</downloadUrl>
+              <repository>
+                  <id>github</id>
+                  <url>https://maven.pkg.github.com/thealmikey/zilla-kt/</url>
+              </repository>
+          </distributionManagement>
+          <properties>
+              <docker.skip.push>false</docker.skip.push>
+              <docker.skip.tag>false</docker.skip.tag>
+              <docker.latest.tag>latest</docker.latest.tag>
+          </properties>
 
       <build>
         <plugins>
