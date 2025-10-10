@@ -1,7 +1,6 @@
 {
   "repositories":
   [
-    "https://maven.packages.aklivity.io/",
     "https://repo.maven.apache.org/maven2/"
   ],
 

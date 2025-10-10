@@ -285,6 +285,15 @@
     </dependencies>
 
     <build>
+
+        <resources>
+            <resource>
+                <directory>${project.basedir}/src/main/resources</directory>
+                <includes>
+                    <include>**/*</include>
+                </includes>
+            </resource>
+        </resources>
         <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
         <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
 
@@ -417,6 +426,10 @@
                 <groupId>org.moditect</groupId>
                 <artifactId>moditect-maven-plugin</artifactId>
                 <version>${moditect.version}</version>
+                <configuration>
+                    <skip>true</skip>
+                    <failOnWarning>false</failOnWarning>
+                </configuration>
             </plugin>
 
             <plugin>

@@ -2,7 +2,6 @@
   "repositories":
   [
     "https://repo1.maven.org/maven2/",
-    "https://maven.packages.aklivity.io/",
     "https://repo.maven.apache.org/maven2/",
     "https://jitpack.io",
     "https://maven.google.com/",
@@ -79,7 +78,7 @@
     "jakarta.json.bind:jakarta.json.bind-api:3.0.1",
     "io.minio:minio:8.6.0",
     "org.leadpony.joy:joy-yaml:2.1.0",
-    "com.squareup.okio:okio:3.9.1",
-    "com.squareup.okhttp3:okhttp:5.1.0"
+    "com.squareup.okio:okio-jvm:3.10.2",
+    "com.squareup.okhttp3:okhttp-jvm:5.1.0"
   ]
 }

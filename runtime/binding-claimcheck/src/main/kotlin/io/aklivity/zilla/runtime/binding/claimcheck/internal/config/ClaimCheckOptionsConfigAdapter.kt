@@ -21,7 +21,7 @@ class ClaimCheckOptionsConfigAdapter : OptionsConfigAdapterSpi {
                     endpoint = it.getString("endpoint", "http://localhost:9000"),
                     accessKey = it.getString("accessKey", ""),
                     secretKey = it.getString("secretKey", ""),
-                    bucket = it.getString("bucket", "uploads")
+                    bucket = it.getString("bucket", "mybucket")
                 )
             }
             println("ClaimCheckOptionsConfigAdapter: Exiting adaptFromJson with config: $config")

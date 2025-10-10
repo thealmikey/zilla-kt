@@ -14,13 +14,13 @@
 #
 
 FROM eclipse-temurin:22-jdk AS build
-
+RUN apt-get update && apt-get install -y ca-certificates
 COPY maven /root/.m2/repository
 
 COPY zpmw zpmw
-COPY zpm.json.template zpm.json.template
+COPY zpm.json zpm.json
 
-RUN cat zpm.json.template | sed "s/\${VERSION}/${project.version}/g" | tee zpm.json
+RUN cat zpm.json | sed "s/\${VERSION}/${project.version}/g" | tee zpm.json
 
 RUN ls /root/.m2/repository/io/aklivity/zilla
 

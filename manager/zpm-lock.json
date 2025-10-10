@@ -62,7 +62,6 @@
         "io.minio:minio:8.5.3"
     ],
     "repositories": [
-        "https://maven.packages.aklivity.io/",
         "https://repo.maven.apache.org/maven2/",
         "https://jitpack.io",
         "https://maven.google.com/",

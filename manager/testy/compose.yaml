@@ -1,6 +1,6 @@
 services:
   zillakt:
-    image: mike/kotlin/zilla:develop-SNAPSHOT
+    image: zillali:develop-SNAPSHOT
     ports:
       - "12345:12345"
     volumes:
@@ -18,7 +18,7 @@ services:
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
-    command: server /data --console-address ":9001"
+
     volumes:
       - minio-data:/data
       - ./init:/init
