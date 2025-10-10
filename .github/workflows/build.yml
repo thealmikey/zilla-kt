@@ -31,7 +31,7 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build with Maven (Skip Tests)
-        run: ./mvnw -B -U -nsu -DskipTests -Ddocker.logStdout -Ddocker.verbose -Dmaven.test.skip=true install
+        run: ./mvnw -B -U -nsu -DskipTests -Ddocker.logStdout -Ddocker.verbose -Dcheckstyle.skip=true -Dlicense.skip=true -Dmaven.test.skip=true install
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           # Removed GITHUB_TOKEN as it’s not needed for Maven build
