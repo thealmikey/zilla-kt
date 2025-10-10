@@ -22,7 +22,7 @@ jobs:
           java-version: 21
 
       - name: Build with Maven (Skip Tests)
-        run: ./mvnw -B -U -nsu -DskipTests=true -Ddocker.logStdout -Ddocker.verbose -Dcheckstyle.skip=true -Dlicense.skip=true install
+        run: ./mvnw -B -U -nsu -DskipTests=true -Ddocker.logStdout -Ddocker.verbose -Dcheckstyle.skip=true -Dlicense.skip=true install -e -v
         env:
           GITHUB_ACTOR: ${{ github.actor }}
 
