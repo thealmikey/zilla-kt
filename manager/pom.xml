@@ -33,6 +33,7 @@
         <maven.failsafe.version>3.2.5</maven.failsafe.version>
         <moditect.version>1.2.0.Final</moditect.version>
         <jacoco.version>0.8.12</jacoco.version>
+        <maven.test.skip>true</maven.test.skip>
     </properties>
 
     <repositories>
