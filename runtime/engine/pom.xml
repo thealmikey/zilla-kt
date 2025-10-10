@@ -245,9 +245,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-          <configuration>
-              <skipTestCompile>true</skipTestCompile> <!-- Ensure test compilation is skipped -->
-          </configuration>
       </plugin>
       <plugin>
         <groupId>org.jboss.byteman</groupId>
@@ -314,10 +311,6 @@
             <type>test-jar</type>
           </dependency>
         </dependencies>
-          <configuration>
-              <skipITs>true</skipITs>
-              <skipTests>true</skipTests>
-          </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

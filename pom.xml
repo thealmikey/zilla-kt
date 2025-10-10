@@ -91,7 +91,6 @@
     <jmh.version>1.37</jmh.version>
     <kotlin.version>2.1.21</kotlin.version>
     <jpms.module.version>1.0.0</jpms.module.version>
-      <maven.test.skip>true</maven.test.skip>
   </properties>
 
   <modules>
@@ -423,19 +422,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.13.0</version>
-          <configuration>
-              <skipTestCompile>true</skipTestCompile> <!-- Explicitly skip test compilation -->
-
-<!--            <moduleVersion>${jpms.module.version}</moduleVersion>-->
-          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-dependency-plugin</artifactId>
           <version>3.2.0</version>
-            <configuration>
-                <skip>${maven.test.skip}</skip>
-            </configuration>
         </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
@@ -482,11 +473,6 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.0.0-M5</version>
-          <configuration>
-              <skipTests>${maven.test.skip}</skipTests>
-<!--            <argLine>@{jacoco.java.option} -Xshare:off</argLine>-->
-
-          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
