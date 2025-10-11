@@ -26,6 +26,7 @@ jobs:
           docker images --format "{{.Repository}}:{{.Tag}}" | grep "zillali" || echo "No zillali image found"
           docker images
           if [ -f cloud/docker-image/src/main/docker/assembly.xml ]; then cat cloud/docker-image/src/main/docker/assembly.xml; else echo "assembly.xml not found"; fi
+          if [ -f cloud/docker-image/src/main/docker/zpm.json ]; then cat cloud/docker-image/src/main/docker/zpm.json; else echo "zpm.json not found"; fi
 
       - name: Save Docker image
         if: success()
