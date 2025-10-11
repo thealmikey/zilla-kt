@@ -14,10 +14,15 @@ jobs:
           java-version: 21
 
       - name: Debug Secret
-        run: echo "CR_PAT set: ${{ secrets.CR_PAT && 'Yes' || 'No' }}"
+        run: |
+          if [ -n "${{ secrets.CR_PAT }}" ]; then
+            echo "CR_PAT set: Yes"
+          else
+            echo "CR_PAT set: No"
+          fi
 
       - name: Build with Maven (Skip Tests)
-        run: ./mvnw -B -U -nsu -DskipTests=true -Dmaven.test.skip=true -Dmaven.dependency.skip.test=true -Ddocker.logStdout=true -Ddocker.verbose=true -Dcheckstyle.skip=true -Dlicense.skip=true install -X
+        run: ./mvnw -B -U -nsu -DskipTests=true -Dmaven.test.skip=true -Dmaven.dependency.skip.test=true -Ddocker.logStdout=true -Ddocker.skip.push=false -Ddocker.verbose=true -Dcheckstyle.skip=true -Dlicense.skip=true install -X
         env:
           GITHUB_ACTOR: ${{ github.actor }}
 
