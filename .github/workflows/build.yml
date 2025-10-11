@@ -1,12 +1,3 @@
-name: build
-
-on:
-  push:
-    branches: [ develop, 'feature/**' ]
-  pull_request:
-    branches: [ develop, 'feature/**' ]
-  workflow_dispatch:
-
 jobs:
   build:
     name: Build and Publish Docker Image
@@ -22,24 +13,25 @@ jobs:
           distribution: zulu
           java-version: 21
 
+      - name: Debug Secret
+        run: echo "CR_PAT set: ${{ secrets.CR_PAT && 'Yes' || 'No' }}"
+
       - name: Build with Maven (Skip Tests)
-        run: ./mvnw -B -U -nsu -DskipTests=true -Ddocker.logStdout -Ddocker.verbose -Dcheckstyle.skip=true -Dlicense.skip=true install -e -v
+        run: ./mvnw -B -U -nsu -DskipTests=true -Dmaven.test.skip=true -Dmaven.dependency.skip.test=true -Ddocker.logStdout=true -Ddocker.verbose=true -Dcheckstyle.skip=true -Dlicense.skip=true install -X
         env:
           GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Debug Docker Images
+        run: |
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "zillali" || echo "No zillali image found"
+          docker images
+          if [ -f cloud/docker-image/src/main/docker/assembly.xml ]; then cat cloud/docker-image/src/main/docker/assembly.xml; else echo "assembly.xml not found"; fi
 
       - name: Save Docker image
         if: success()
         run: |
           mkdir -p ~/docker-cache
-          docker images --format "{{.Repository}}:{{.Tag}}" | grep "zillali" || echo "No zillali image found"
           docker save -o ~/docker-cache/docker.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT || echo "Failed to save Docker image"
-
-      - name: Cache Docker image
-        uses: actions/cache@v4
-        if: success()
-        with:
-          path: ~/docker-cache/docker.tar
-          key: zilla-develop-SNAPSHOT-${{ github.run_id }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3

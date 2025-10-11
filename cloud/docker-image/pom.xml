@@ -418,17 +418,17 @@
             <artifactId>docker-maven-plugin</artifactId>
             <version>0.45.0</version>
             <configuration>
-                <dockerHost>unix://${user.home}/.docker/desktop/docker.sock</dockerHost>
-                <filter>${*}</filter>
-                <images combine.children="append">
+                <verbose>true</verbose>
+                <logStdout>true</logStdout>
+                <images>
                     <image>
                         <alias>zillali</alias>
-                        <name>ghcr.io/thealmikey/zillali:%v</name> <!-- Your registry -->
+                        <name>ghcr.io/thealmikey/zillali:develop-SNAPSHOT</name>
                         <build>
                             <noCache>true</noCache>
                             <contextDir>${project.basedir}/src/main/docker</contextDir>
                             <tags>
-                                <tag>${docker.latest.tag}</tag> <!-- Will use "feature" in develop profile -->
+                                <tag>develop-SNAPSHOT</tag>
                             </tags>
                             <buildx>
                                 <platforms>
@@ -449,8 +449,16 @@
             </configuration>
             <executions>
                 <execution>
+                    <id>docker-build</id>
+                    <phase>install</phase>
                     <goals>
                         <goal>build</goal>
+                    </goals>
+                </execution>
+                <execution>
+                    <id>docker-push</id>
+                    <phase>install</phase>
+                    <goals>
                         <goal>push</goal>
                     </goals>
                 </execution>
