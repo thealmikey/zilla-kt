@@ -2,12 +2,11 @@ name: Build and Publish Docker Image
 
 on:
   push:
-    branches:
-      - develop
+    branches: [ develop, 'feature/**' ]
   pull_request:
-    branches:
-      - develop
+    branches: [ develop, 'feature/**' ]
   workflow_dispatch:
+
 
 jobs:
   build:
