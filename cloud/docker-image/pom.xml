@@ -395,13 +395,11 @@
                     </configuration>
                 </execution>
                 <execution>
-                    <id>generate-assembly</id>
+                    <id>generate-assembly-direct</id>
                     <phase>generate-resources</phase>
-                    <goals>
-                        <goal>exec</goal>
-                    </goals>
+                    <goals><goal>java</goal></goals>
                     <configuration>
-                        <executable>${project.basedir}/src/main/docker/zpmw</executable>
+                        <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
                         <arguments>
                             <argument>generate-assembly</argument>
                             <argument>--output</argument>
