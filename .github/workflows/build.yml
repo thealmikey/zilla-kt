@@ -30,7 +30,8 @@ jobs:
         if: success()
         run: |
           mkdir -p ~/docker-cache
-          docker save -o ~/docker-cache/docker.tar $(docker images --format "{{.Repository}}" | grep "zilla")
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "zillali" || echo "No zillali image found"
+          docker save -o ~/docker-cache/docker.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT || echo "Failed to save Docker image"
 
       - name: Cache Docker image
         uses: actions/cache@v4
