@@ -423,7 +423,7 @@
                 <images combine.children="append">
                     <image>
                         <alias>zillali</alias>
-                        <name>ghcr.io/YOUR_USERNAME/zillali:%v</name> <!-- Your registry -->
+                        <name>ghcr.io/thealmikey/zillali:%v</name> <!-- Your registry -->
                         <build>
                             <noCache>true</noCache>
                             <contextDir>${project.basedir}/src/main/docker</contextDir>
