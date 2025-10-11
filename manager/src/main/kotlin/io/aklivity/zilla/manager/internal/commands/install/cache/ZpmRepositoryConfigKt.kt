@@ -35,7 +35,15 @@ object ZpmRepositoryConfigKt {
     }
 
     fun newRepositorySystem(): RepositorySystem {
-        return RepositorySystemSupplier().get()
+        return object : RepositorySystemSupplier() {
+            override fun createTransporterFactories(): MutableMap<String, TransporterFactory> {
+                val result = super.createTransporterFactories()
+                result[ApacheTransporterFactory.NAME] =
+                    ApacheTransporterFactory(getChecksumExtractor(), getPathProcessor())
+                logger.debug { "Custom ApacheTransporterFactory registered" }
+                return result
+            }
+        }.get()
     }
 
     fun newRepositorySystemSession(system: RepositorySystem, preferredLocalRepoDir: Path): RepositorySystemSession {
