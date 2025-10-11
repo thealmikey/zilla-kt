@@ -11,6 +11,7 @@ jobs:
   build:
     name: Build and Publish Docker Image
     runs-on: ubuntu-latest
+    environment: Zilla Env
     steps:
       - name: Checkout GitHub sources
         uses: actions/checkout@v4
