@@ -9,7 +9,7 @@ import org.eclipse.aether.repository.LocalRepository
 import org.eclipse.aether.repository.RemoteRepository
 import org.eclipse.aether.spi.connector.transport.TransporterFactory
 import org.eclipse.aether.supplier.RepositorySystemSupplier
-import org.eclipse.aether.transport.apache.ApacheTransporterFactory
+import org.eclipse.aether.transport.file.FileTransporterFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
@@ -35,15 +35,9 @@ object ZpmRepositoryConfigKt {
     }
 
     fun newRepositorySystem(): RepositorySystem {
-        return object : RepositorySystemSupplier() {
-            override fun createTransporterFactories(): MutableMap<String, TransporterFactory> {
-                val result = super.createTransporterFactories()
-                result[ApacheTransporterFactory.NAME] =
-                    ApacheTransporterFactory(getChecksumExtractor(), getPathProcessor())
-                logger.debug { "Custom ApacheTransporterFactory registered" }
-                return result
-            }
-        }.get()
+        val repositorySystem = RepositorySystemSupplier().get()
+        logger.debug { "Default RepositorySystem created" }
+        return repositorySystem
     }
 
     fun newRepositorySystemSession(system: RepositorySystem, preferredLocalRepoDir: Path): RepositorySystemSession {
@@ -51,8 +45,6 @@ object ZpmRepositoryConfigKt {
         val session = MavenRepositorySystemUtils.newSession()
         val localRepo = LocalRepository(localRepoDir.toFile())
         session.localRepositoryManager = system.newLocalRepositoryManager(session, localRepo)
-
-
 
         return session
     }
