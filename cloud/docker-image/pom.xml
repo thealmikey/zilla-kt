@@ -370,6 +370,20 @@
         <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>exec-maven-plugin</artifactId>
+            <dependencies>
+                <!-- 👇 Bring Maven Resolver classes into forked JVM -->
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-spi</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-impl</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+            </dependencies>
+
             <configuration>
                 <executableDependency>
                     <groupId>${project.groupId}</groupId>
@@ -396,6 +410,8 @@
                             <argument>--output</argument>
                             <argument>${project.basedir}/src/main/docker/assembly.xml</argument>
                         </arguments>
+                        <classpathScope>runtime</classpathScope>
+                        <pluginDependencies>true</pluginDependencies>
                     </configuration>
                 </execution>
                 <execution>
