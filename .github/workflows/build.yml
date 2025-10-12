@@ -14,117 +14,91 @@ jobs:
     environment: Zilla Env
 
     steps:
-      # ---------------------------
-      # 1. Checkout Source
-      # ---------------------------
+      # 1️⃣ Checkout full repo history (important for versioning / changelog)
       - name: Checkout GitHub sources
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------
-      # 2. Setup JDK
-      # ---------------------------
-      - name: Setup JDK 21 (Zulu)
+      # 2️⃣ Setup JDK 22 (Temurin) instead of Zulu 21
+      - name: Setup JDK 22 (Temurin)
         uses: actions/setup-java@v4
         with:
-          distribution: zulu
-          java-version: 21
+          distribution: temurin        # unified Eclipse Adoptium stack
+          java-version: 22
+          cache: maven                 # enables built-in Maven cache
 
-      # ---------------------------
-      # 3. Debug Secrets (optional)
-      # ---------------------------
-      - name: Debug Secret
+      # 3️⃣ Optional: print versions to ensure environment alignment
+      - name: Verify Java & Maven Versions
+        run: |
+          java -version
+          ./mvnw -version
+
+      # 4️⃣ Validate secrets are available
+      - name: Validate CR_PAT Secret
         run: |
           if [ -n "${{ secrets.CR_PAT }}" ]; then
             echo "✅ CR_PAT secret is set"
           else
             echo "❌ CR_PAT secret is missing!"
+            exit 1
           fi
 
-      # ---------------------------
-      # 4. Clean Maven Build (no stale JARs)
-      # ---------------------------
-      - name: Build with Maven (Clean + Skip Tests)
+      # 5️⃣ Build all Maven modules (clean build, skip tests)
+      - name: Maven Build (Clean + Skip Tests)
         run: |
           ./mvnw clean install \
             -B -U \
-            -DskipTests=true \
-            -Dcheckstyle.skip=true \
-            -Dlicense.skip=true \
+            -DskipTests \
+            -Dcheckstyle.skip \
+            -Dlicense.skip \
             -Ddocker.logStdout=true \
             -Ddocker.skip.push=false \
             -Ddocker.verbose=true
         env:
+          MAVEN_OPTS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
           GITHUB_ACTOR: ${{ github.actor }}
 
-      # ---------------------------
-      # 5. Debug Docker Build Context
-      # ---------------------------
-      - name: Debug Docker Context
+      # 6️⃣ Debug build context
+      - name: Inspect Docker Context
         run: |
-          echo "📂 Listing build context..."
+          echo "📂 Context:"
           find cloud/docker-image -maxdepth 2 -type f
+          echo "🧩 zpm.json snippet:"
+          head -n 20 cloud/docker-image/src/main/docker/zpm.json || true
 
-          echo "🧩 Checking assembly and config files..."
-          if [ -f cloud/docker-image/src/main/docker/assembly.xml ]; then
-            echo "--- assembly.xml ---"
-            cat cloud/docker-image/src/main/docker/assembly.xml
-          else
-            echo "⚠️ assembly.xml not found"
-          fi
-
-          if [ -f cloud/docker-image/src/main/docker/zpm.json ]; then
-            echo "--- zpm.json ---"
-            cat cloud/docker-image/src/main/docker/zpm.json
-          else
-            echo "⚠️ zpm.json not found"
-          fi
-
-      # ---------------------------
-      # 6. Build Docker Image (no cache)
-      # ---------------------------
+      # 7️⃣ Build Docker image using new multi-stage Dockerfile
       - name: Build Docker Image (no cache)
         run: |
-          echo "🛠️ Building Docker image from fresh context..."
           docker build --no-cache \
             -t ghcr.io/thealmikey/zillali:develop-SNAPSHOT \
+            -f cloud/docker-image/Dockerfile \
             cloud/docker-image
 
-      # ---------------------------
-      # 7. Inspect Built Image
-      # ---------------------------
+      # 8️⃣ Inspect built image contents
       - name: Inspect Docker Image
         run: |
-          echo "🔍 Listing built images:"
           docker images --format "{{.Repository}}:{{.Tag}}"
+          docker run --rm ghcr.io/thealmikey/zillali:develop-SNAPSHOT \
+            find /opt/zilla -maxdepth 3 -type f -name "*.jar" || true
 
-          echo "📦 JARs inside image:"
-          docker run --rm ghcr.io/thealmikey/zillali:develop-SNAPSHOT find / -name "*.jar" || echo "No jars found"
-
-      # ---------------------------
-      # 8. Save Docker Image as Artifact (cache or debug)
-      # ---------------------------
-      - name: Save Docker image
+      # 9️⃣ Cache built image for later reuse or debugging
+      - name: Cache Docker Image Artifact
         if: success()
         run: |
           mkdir -p ~/docker-cache
-          docker save -o ~/docker-cache/docker.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT
+          docker save -o ~/docker-cache/zillali.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT
         continue-on-error: true
 
-      # ---------------------------
-      # 9. Login to GitHub Container Registry
-      # ---------------------------
-      - name: Login to GitHub Container Registry
+      # 🔟 Login to GitHub Container Registry (GHCR)
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
 
-      # ---------------------------
-      # 10. Conditional Artifact Upload (if build fails)
-      # ---------------------------
+      # 1️⃣1️⃣ Upload diagnostics if build fails
       - name: Upload Build Diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -133,5 +107,4 @@ jobs:
           path: |
             **/hs_err_pid*.log
             **/target/surefire-reports/
-            **/target/zilla-itests/
             **/target/failsafe-reports/
