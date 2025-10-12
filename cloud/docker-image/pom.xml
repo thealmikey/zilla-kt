@@ -374,12 +374,32 @@
                 <!-- 👇 Bring Maven Resolver classes into forked JVM -->
                 <dependency>
                     <groupId>org.apache.maven.resolver</groupId>
-                    <artifactId>maven-resolver-spi</artifactId>
+                    <artifactId>maven-resolver-api</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-util</artifactId>
                     <version>1.9.18</version>
                 </dependency>
                 <dependency>
                     <groupId>org.apache.maven.resolver</groupId>
                     <artifactId>maven-resolver-impl</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-connector-basic</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-transport-http</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-spi</artifactId>
                     <version>1.9.18</version>
                 </dependency>
             </dependencies>
