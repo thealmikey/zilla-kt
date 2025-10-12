@@ -13,7 +13,7 @@
 # specific language governing permissions and limitations under the License.
 #
 
-FROM eclipse-temurin:22-jdk AS build
+FROM maven:3.9.9-eclipse-temurin-22-jammy AS build
 RUN apt-get update && apt-get install -y ca-certificates
 COPY maven /root/.m2/repository
 
