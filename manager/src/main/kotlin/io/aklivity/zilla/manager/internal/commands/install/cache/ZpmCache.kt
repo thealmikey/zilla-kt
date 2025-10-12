@@ -18,13 +18,8 @@ import org.eclipse.aether.graph.Dependency
 import org.eclipse.aether.repository.LocalRepository
 import org.eclipse.aether.repository.RemoteRepository
 import org.eclipse.aether.resolution.*
-import org.eclipse.aether.transfer.AbstractTransferListener
-import org.eclipse.aether.transfer.TransferEvent
-import org.eclipse.aether.transfer.TransferResource
 import org.eclipse.aether.util.artifact.JavaScopes
-import org.eclipse.aether.util.graph.traverser.FatArtifactTraverser
-import org.eclipse.aether.util.graph.visitor.NodeListGenerator
-import org.eclipse.aether.util.graph.visitor.PreorderDependencyNodeConsumerVisitor
+import org.eclipse.aether.util.graph.visitor.PreorderNodeListGenerator
 import org.eclipse.aether.util.repository.SimpleArtifactDescriptorPolicy
 import java.io.File
 import java.nio.file.Files
@@ -136,10 +131,10 @@ open class ZpmCacheKt(
             return ZpmResolutionErrorKt.DependencyResolutionError("dependencies", e).left()
         }
 
-        // Step 4: Process artifacts
-        val nlg = NodeListGenerator()
-        dependencyResult.root.accept(PreorderDependencyNodeConsumerVisitor(nlg))
-        nlg.getNodesWithDependencies().forEach { node ->
+        val nlg = PreorderNodeListGenerator()
+        dependencyResult.root.accept(nlg)
+
+        nlg.nodes.forEach { node ->
             val dep = node.dependency ?: return@forEach
             val artifact = dep.artifact
             val artifactIdStr = "${artifact.groupId}:${artifact.artifactId}:${artifact.version}"
@@ -162,6 +157,7 @@ open class ZpmCacheKt(
                 return ZpmResolutionErrorKt.DependencyResolutionError(artifactIdStr, Exception("Artifact missing")).left()
             }
         }
+
 
         return artifacts.right()
     }
