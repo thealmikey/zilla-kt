@@ -370,44 +370,39 @@
         <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>exec-maven-plugin</artifactId>
-            <version>3.1.1</version>
-            <dependencies>
-                <dependency>
-                    <groupId>io.aklivity.zilla</groupId>
+            <configuration>
+                <executableDependency>
+                    <groupId>${project.groupId}</groupId>
                     <artifactId>manager</artifactId>
-                    <version>${project.version}</version>
-                </dependency>
-            </dependencies>
+                </executableDependency>
+                <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
+                <arguments>
+                    <argument>--launcher-directory</argument>
+                    <argument>${project.basedir}/src/main/docker</argument>
+                    <argument>wrap</argument>
+                </arguments>
+            </configuration>
             <executions>
                 <execution>
-                    <id>generate-zpmw</id>
+                    <id>generate-assembly</id>
                     <phase>generate-resources</phase>
                     <goals>
-                        <goal>java</goal>
+                        <goal>exec</goal>
                     </goals>
                     <configuration>
-                        <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
-                        <arguments>
-                            <argument>--launcher-directory</argument>
-                            <argument>${project.basedir}/src/main/docker</argument>
-                            <argument>wrap</argument>
-                        </arguments>
-                    </configuration>
-                </execution>
-                <execution>
-                    <id>generate-assembly-direct</id>
-                    <phase>generate-resources</phase>
-                    <goals><goal>java</goal></goals>
-                    <configuration>
-                        <mainClass>io.aklivity.zilla.manager.internal.ZpmMainKt</mainClass>
+                        <executable>${project.basedir}/src/main/docker/zpmw</executable>
                         <arguments>
                             <argument>generate-assembly</argument>
                             <argument>--output</argument>
                             <argument>${project.basedir}/src/main/docker/assembly.xml</argument>
-                            <argument>--zpm-json</argument>
-                            <argument>${project.basedir}/src/main/docker/zpm.json</argument>
                         </arguments>
                     </configuration>
+                </execution>
+                <execution>
+                    <phase>process-sources</phase>
+                    <goals>
+                        <goal>java</goal>
+                    </goals>
                 </execution>
             </executions>
         </plugin>
