@@ -7,48 +7,114 @@ on:
     branches: [ develop, 'feature/**' ]
   workflow_dispatch:
 
-
 jobs:
   build:
     name: Build and Publish Docker Image
     runs-on: ubuntu-latest
     environment: Zilla Env
+
     steps:
+      # ---------------------------
+      # 1. Checkout Source
+      # ---------------------------
       - name: Checkout GitHub sources
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup JDK 21
+      # ---------------------------
+      # 2. Setup JDK
+      # ---------------------------
+      - name: Setup JDK 21 (Zulu)
         uses: actions/setup-java@v4
         with:
           distribution: zulu
           java-version: 21
 
+      # ---------------------------
+      # 3. Debug Secrets (optional)
+      # ---------------------------
       - name: Debug Secret
         run: |
           if [ -n "${{ secrets.CR_PAT }}" ]; then
-            echo "CR_PAT set: Yes"
+            echo "✅ CR_PAT secret is set"
           else
-            echo "CR_PAT set: No"
+            echo "❌ CR_PAT secret is missing!"
           fi
 
-      - name: Build with Maven (Skip Tests)
-        run: ./mvnw -B -U -nsu -DskipTests=true -Ddocker.logStdout=true -Ddocker.skip.push=false -Ddocker.verbose=true -Dcheckstyle.skip=true -Dlicense.skip=true install
+      # ---------------------------
+      # 4. Clean Maven Build (no stale JARs)
+      # ---------------------------
+      - name: Build with Maven (Clean + Skip Tests)
+        run: |
+          ./mvnw clean install \
+            -B -U \
+            -DskipTests=true \
+            -Dcheckstyle.skip=true \
+            -Dlicense.skip=true \
+            -Ddocker.logStdout=true \
+            -Ddocker.skip.push=false \
+            -Ddocker.verbose=true
         env:
           GITHUB_ACTOR: ${{ github.actor }}
 
-      - name: Debug Docker Images
+      # ---------------------------
+      # 5. Debug Docker Build Context
+      # ---------------------------
+      - name: Debug Docker Context
         run: |
-          docker images --format "{{.Repository}}:{{.Tag}}" | grep "zillali" || echo "No zillali image found"
-          docker images
-          if [ -f cloud/docker-image/src/main/docker/assembly.xml ]; then cat cloud/docker-image/src/main/docker/assembly.xml; else echo "assembly.xml not found"; fi
-          if [ -f cloud/docker-image/src/main/docker/zpm.json ]; then cat cloud/docker-image/src/main/docker/zpm.json; else echo "zpm.json not found"; fi
+          echo "📂 Listing build context..."
+          find cloud/docker-image -maxdepth 2 -type f
 
+          echo "🧩 Checking assembly and config files..."
+          if [ -f cloud/docker-image/src/main/docker/assembly.xml ]; then
+            echo "--- assembly.xml ---"
+            cat cloud/docker-image/src/main/docker/assembly.xml
+          else
+            echo "⚠️ assembly.xml not found"
+          fi
+
+          if [ -f cloud/docker-image/src/main/docker/zpm.json ]; then
+            echo "--- zpm.json ---"
+            cat cloud/docker-image/src/main/docker/zpm.json
+          else
+            echo "⚠️ zpm.json not found"
+          fi
+
+      # ---------------------------
+      # 6. Build Docker Image (no cache)
+      # ---------------------------
+      - name: Build Docker Image (no cache)
+        run: |
+          echo "🛠️ Building Docker image from fresh context..."
+          docker build --no-cache \
+            -t ghcr.io/thealmikey/zillali:develop-SNAPSHOT \
+            cloud/docker-image
+
+      # ---------------------------
+      # 7. Inspect Built Image
+      # ---------------------------
+      - name: Inspect Docker Image
+        run: |
+          echo "🔍 Listing built images:"
+          docker images --format "{{.Repository}}:{{.Tag}}"
+
+          echo "📦 JARs inside image:"
+          docker run --rm ghcr.io/thealmikey/zillali:develop-SNAPSHOT find / -name "*.jar" || echo "No jars found"
+
+      # ---------------------------
+      # 8. Save Docker Image as Artifact (cache or debug)
+      # ---------------------------
       - name: Save Docker image
         if: success()
         run: |
           mkdir -p ~/docker-cache
-          docker save -o ~/docker-cache/docker.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT || echo "Failed to save Docker image"
+          docker save -o ~/docker-cache/docker.tar ghcr.io/thealmikey/zillali:develop-SNAPSHOT
+        continue-on-error: true
 
+      # ---------------------------
+      # 9. Login to GitHub Container Registry
+      # ---------------------------
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -56,11 +122,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.CR_PAT }}
 
-      - name: Conditional Artifact Upload
-        uses: actions/upload-artifact@v4
+      # ---------------------------
+      # 10. Conditional Artifact Upload (if build fails)
+      # ---------------------------
+      - name: Upload Build Diagnostics
         if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          name: zilla-build-${{ github.event.number }}
+          name: zilla-build-${{ github.event.number || github.run_id }}
           path: |
             **/hs_err_pid*.log
             **/target/surefire-reports/
