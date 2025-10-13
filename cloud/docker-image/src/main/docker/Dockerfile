@@ -22,18 +22,8 @@ COPY maven /root/.m2/repository
 COPY zpmw zpmw
 COPY zpm.json zpm.json
 
-# Ensure wrapper uses the correct Maven version
-COPY .mvn/wrapper/maven-wrapper.properties .mvn/wrapper/maven-wrapper.properties
-
-# Confirm the wrapper is set for 3.9.9 (useful debug output)
-RUN grep "3.9.9" .mvn/wrapper/maven-wrapper.properties || \
-    (echo "ERROR: Maven Wrapper not pinned to 3.9.9" && exit 1)
-
 # Replace ${project.version} tokens inside zpm.json if present
 RUN sed -i "s/\${VERSION}/${project.version}/g" zpm.json
-
-# Optional sanity check on local repo contents
-RUN ls -alh /root/.m2/repository/io/aklivity/zilla || true
 
 # --------------------------------------------------------------------
 # Execute Zilla Manager install/clean using zpmw (which wraps the jar)
