@@ -370,7 +370,45 @@
         <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>exec-maven-plugin</artifactId>
-            <version>3.3.0</version>
+            <dependencies>
+                <!-- 👇 Bring Maven Resolver classes into forked JVM -->
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-api</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-util</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-impl</artifactId>
+                    <version>1.9.18</version>
+                    <exclusions>
+                        <exclusion>
+                            <groupId>org.apache.maven</groupId>
+                            <artifactId>maven-artifact</artifactId>
+                        </exclusion>
+                    </exclusions>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-connector-basic</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-transport-http</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.maven.resolver</groupId>
+                    <artifactId>maven-resolver-spi</artifactId>
+                    <version>1.9.18</version>
+                </dependency>
+            </dependencies>
 
             <configuration>
                 <executableDependency>
@@ -383,11 +421,16 @@
                     <argument>${project.basedir}/src/main/docker</argument>
                     <argument>wrap</argument>
                 </arguments>
-                <classpathScope>runtime</classpathScope>
-                <pluginDependencies>true</pluginDependencies>
             </configuration>
+            <executions>
+                <execution>
+                    <phase>process-sources</phase>
+                    <goals>
+                        <goal>java</goal>
+                    </goals>
+                </execution>
+            </executions>
         </plugin>
-
         <plugin>
             <groupId>io.fabric8</groupId>
             <artifactId>docker-maven-plugin</artifactId>
