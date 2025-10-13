@@ -381,6 +381,8 @@
                     <argument>${project.basedir}/src/main/docker</argument>
                     <argument>wrap</argument>
                 </arguments>
+                <classpathScope>runtime</classpathScope>
+                <includeProjectDependencies>true</includeProjectDependencies>
             </configuration>
             <executions>
                 <execution>
