@@ -241,6 +241,12 @@
             <artifactId>maven-resolver-provider</artifactId>
             <version>3.9.9</version>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/org.apache.maven/maven-core -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-core</artifactId>
+            <version>3.9.9</version>
+        </dependency>
 
 
         <!--        <dependency>-->

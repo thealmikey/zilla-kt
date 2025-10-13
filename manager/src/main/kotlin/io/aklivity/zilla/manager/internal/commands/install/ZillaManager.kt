@@ -214,12 +214,12 @@ class GenerateAssemblyCommand : CliktCommand(name = "generate-assembly") {
         "--output",
         "-o",
         help = "Output path for assembly.xml"
-    ).default("src/main/docker/assembly.xml")
+    ).default("assembly.xml")
     private val zpmJsonPath: String by option(
         "--zpm-json",
         "-j",
         help = "Path to zpm.json file"
-    ).default("src/main/docker/zpm.json")
+    ).default("zpm.json")
     private val debug: Boolean by option("--debug", help = "Enable debug logging").flag(default = false)
     private val logger = LoggerFactory.getLogger(GenerateAssemblyCommand::class.java)
 
