@@ -1,6 +1,6 @@
 services:
   zillakt:
-    image: zillali:develop-SNAPSHOT
+    image: ghcr.io/thealmikey/zillali:develop-SNAPSHOT
     ports:
       - "12345:12345"
     volumes:
