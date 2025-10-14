@@ -59,13 +59,18 @@
             },
             "presigned": true
           },
-          "exit": "north_echo_server"
+          "exit": "my_tcp"
         }
       ]
     },
-    "north_echo_server": {
+    "http_client": {
+      "type": "http",
+      "kind": "client",
+      "exit": "my_tcp"
+    },
+    "my_tcp": {
       "type": "tcp",
-      "kind": "client"
+      "kind": "client",
     }
   },
   "telemetry": {
