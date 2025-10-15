@@ -24,9 +24,15 @@ data class ClaimCheckConditionConfig(
 
                 when (name) {
                     ":path" -> {
-                        // Normalise both sides to ensure leading slash consistency
+                        // Normalize configured path
                         val normalizedPath = if (path.startsWith("/")) path else "/$path"
-                        if (value.startsWith(normalizedPath)) {
+                        // Handle {uuid} placeholder
+                        if (normalizedPath.contains("{uuid}")) {
+                            val prefix = normalizedPath.substringBefore("{uuid}")
+                            if (value.startsWith(prefix) && value.length > prefix.length) {
+                                hasPath = true
+                            }
+                        } else if (value.startsWith(normalizedPath)) {
                             hasPath = true
                         }
                     }
@@ -36,11 +42,9 @@ data class ClaimCheckConditionConfig(
                         }
                     }
                 }
-
-                // Small optimisation: early exit if both true
-//                if (hasPath && hasMethod) {return@forEach true
             }
 
+            println("ClaimCheckConditionConfig: Matching route (path=$path, method=$method): hasPath=$hasPath, hasMethod=$hasMethod")
             return hasPath && hasMethod
         } catch (ex: Exception) {
             println("ClaimCheckConditionConfig: Error matching route (path=$path, method=$method): ${ex.message}")

@@ -10,11 +10,12 @@
       },
       "exit": "north_http_server"
     },
+
     "north_http_server": {
       "type": "http",
       "kind": "server",
       "options": {
-        "versions": [ "http/1.1" ]
+        "versions": ["http/1.1"]
       },
       "routes": [
         {
@@ -22,7 +23,20 @@
             {
               "headers": {
                 ":scheme": "http",
-                ":method": "PUT"
+                ":method": "PUT",
+                ":path": "/claim"
+              }
+            }
+          ],
+          "exit": "north_claimcheck_server"
+        },
+        {
+          "when": [
+            {
+              "headers": {
+                ":scheme": "http",
+                ":method": "GET",
+                ":path": "/claim/{uuid}"
               }
             }
           ],
@@ -30,6 +44,7 @@
         }
       ]
     },
+
     "north_claimcheck_server": {
       "type": "claimcheck",
       "kind": "proxy",
@@ -45,7 +60,7 @@
             {
               "headers": {
                 ":path": "/claim",
-                ":method":"PUT"
+                ":method": "PUT"
               }
             }
           ],
@@ -60,19 +75,39 @@
             "presigned": true
           },
           "exit": "my_tcp"
+        },
+        {
+          "when": [
+            {
+              "headers": {
+                ":method": "GET",
+                ":path": "/claim/{uuid}"
+              }
+            }
+          ],
+          "with": {
+            "headers": {
+              "Content-Type": "application/octet-stream"
+            },
+            "presigned": false
+          },
+          "exit": "my_tcp"
         }
       ]
     },
+
     "http_client": {
       "type": "http",
       "kind": "client",
       "exit": "my_tcp"
     },
+
     "my_tcp": {
       "type": "tcp",
-      "kind": "client",
+      "kind": "client"
     }
   },
+
   "telemetry": {
     "exporters": {
       "stdout_logs_exporter": {
