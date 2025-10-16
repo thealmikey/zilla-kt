@@ -79,6 +79,7 @@
     "io.minio:minio:8.6.0",
     "org.leadpony.joy:joy-yaml:2.1.0",
     "com.squareup.okio:okio-jvm:3.10.2",
-    "com.squareup.okhttp3:okhttp-jvm:5.1.0"
+    "com.squareup.okhttp3:okhttp-jvm:5.1.0",
+    "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.16.1"
   ]
 }

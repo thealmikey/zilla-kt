@@ -63,7 +63,12 @@
         }
       ]
     },
-    "north_echo_server": {
+    "my_http_client": {
+      "type": "http",
+      "kind": "client",
+      "exit": "my_tcp_server"
+    },
+    "my_tcp_server": {
       "type": "tcp",
       "kind": "client"
     }

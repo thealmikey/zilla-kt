@@ -24,11 +24,11 @@
               "headers": {
                 ":scheme": "http",
                 ":method": "PUT",
-                ":path": "/claim"
+                ":path": "/claim/image"
               }
             }
           ],
-          "exit": "north_claimcheck_server"
+          "exit": "north_claimcheck_server_images"
         },
         {
           "when": [
@@ -36,16 +36,89 @@
               "headers": {
                 ":scheme": "http",
                 ":method": "GET",
-                ":path": "/claim/{uuid}"
+                ":path": "/claim/image/{uuid}"
               }
             }
           ],
-          "exit": "north_claimcheck_server"
+          "exit": "north_claimcheck_server_images"
+        },
+        {
+          "when": [
+            {
+              "headers": {
+                ":scheme": "http",
+                ":method": "PUT",
+                ":path": "/claim/video"
+              }
+            }
+          ],
+          "exit": "north_claimcheck_server_videos"
+        },
+        {
+          "when": [
+            {
+              "headers": {
+                ":scheme": "http",
+                ":method": "GET",
+                ":path": "/claim/video/{uuid}"
+              }
+            }
+          ],
+          "exit": "north_claimcheck_server_videos"
         }
       ]
     },
-
-    "north_claimcheck_server": {
+    "north_claimcheck_server_images": {
+      "type": "claimcheck",
+      "kind": "proxy",
+      "options": {
+        "endpoint": "http://localhost:9000",
+        "accessKey": "minio",
+        "secretKey": "minio123",
+        "bucket": "images"
+      },
+      "routes": [
+        {
+          "when": [
+            {
+              "headers": {
+                ":path": "/claim/image",
+                ":method": "PUT"
+              }
+            }
+          ],
+          "with": {
+            "ttl": 3600,
+            "maxPayloadSize": 10485760,
+            "inMemoryThreshold": 4194304,
+            "headers": {
+              "X-Claim": "uuid",
+              "Content-Type": "image/jpeg"
+            },
+            "presigned": true
+          },
+          "exit": "http_client"
+        },
+        {
+          "when": [
+            {
+              "headers": {
+                ":method": "GET",
+                ":path": "/claim/image/{uuid}"
+              }
+            }
+          ],
+          "with": {
+            "headers": {
+              "Content-Type": "image/jpeg"
+            },
+            "presigned": true
+          },
+          "exit": "http_client"
+        }
+      ]
+    },
+    "north_claimcheck_server_videos": {
       "type": "claimcheck",
       "kind": "proxy",
       "options": {
@@ -59,39 +132,39 @@
           "when": [
             {
               "headers": {
-                ":path": "/claim",
+                ":path": "/claim/video",
                 ":method": "PUT"
               }
             }
           ],
           "with": {
-            "ttl": 3600,
-            "maxPayloadSize": 10485760,
-            "inMemoryThreshold": 4194304,
+            "ttl": 7200,
+            "maxPayloadSize": 52428800,
+            "inMemoryThreshold": 10485760,
             "headers": {
               "X-Claim": "uuid",
-              "Content-Type": "application/json"
+              "Content-Type": "video/mp4"
             },
             "presigned": true
           },
-          "exit": "my_tcp"
+          "exit": "http_client"
         },
         {
           "when": [
             {
               "headers": {
                 ":method": "GET",
-                ":path": "/claim/{uuid}"
+                ":path": "/claim/video/{uuid}"
               }
             }
           ],
           "with": {
             "headers": {
-              "Content-Type": "application/octet-stream"
+              "Content-Type": "video/mp4"
             },
-            "presigned": false
+            "presigned": true
           },
-          "exit": "my_tcp"
+          "exit": "http_client"
         }
       ]
     },
