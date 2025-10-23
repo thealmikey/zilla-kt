@@ -33,6 +33,7 @@ import io.minio.http.Method
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.UUID
 import java.util.function.LongUnaryOperator
 import java.util.function.Predicate
@@ -385,7 +386,7 @@ class ClaimCheckProxyFactory(
                 initialAck = acknowledge
                 state = ClaimCheckState.openingInitial(state)
                 lastActivityTime = System.currentTimeMillis()
-                initialMax = resolved.maxPayloadSize.toInt().coerceAtLeast(8192)
+                initialMax = resolved.maxPayloadSize.toInt().coerceAtLeast(64 * 1024)
                 doHttpWindow(authorization, traceId, 0L, 0, 0)
                 println("HttpProxy: Initial window sent with initialMax=$initialMax")
                 println("HttpProxy: <<< Exiting onHttpBegin normally")
@@ -436,7 +437,7 @@ class ClaimCheckProxyFactory(
 
 
         private fun onHttpData(data: DataFW) {
-            println("HttpProxy: Entering onHttpData(initialId=$initialId)")
+            println("HttpProxy: Entering onHttpData(initialId=$initialId, state=$state, totalSize=$totalSize)")
             try {
                 val sequence = data.sequence()
                 val acknowledge = data.acknowledge()
@@ -444,13 +445,34 @@ class ClaimCheckProxyFactory(
                 val authorization = data.authorization()
                 val reserved = data.reserved()
                 val payload = data.payload()
+                println("HttpProxy: Received DataFW: sequence=$sequence, acknowledge=$acknowledge, traceId=$traceId, authorization=$authorization, reserved=$reserved, payloadSize=${payload.sizeof()}")
 
-                initialSeq = sequence + reserved
-                lastActivityTime = System.currentTimeMillis()
+                // Validate sequence and reserved
+                if (reserved < 0) {
+                    println("HttpProxy: Invalid reserved value: reserved=$reserved")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_400)
+                    return
+                }
+                val nextSeq = sequence + reserved
+                if (nextSeq < initialSeq) {
+                    println("HttpProxy: Invalid sequence number: received=$sequence, reserved=$reserved, expected>=$initialSeq")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_400)
+                    return
+                }
+                if (nextSeq == initialSeq) {
+                    println("HttpProxy: Zero-length or redundant frame: sequence=$sequence, reserved=$reserved")
+                }
+                initialSeq = nextSeq
+                println("HttpProxy: Updated initialSeq=$initialSeq")
 
                 val size = payload.sizeof()
+                if (size > reserved) {
+                    println("HttpProxy: Invalid payload size: size=$size exceeds reserved=$reserved")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_400)
+                    return
+                }
                 totalSize += size
-                println("HttpProxy: Received DataFW: size=$size, totalSize=$totalSize, seq=$sequence, ack=$acknowledge, reserved=$reserved")
+                println("HttpProxy: Payload processed: size=$size, totalSize=$totalSize, maxPayloadSize=${resolved.maxPayloadSize}")
 
                 if (totalSize > resolved.maxPayloadSize) {
                     println("HttpProxy: Total size $totalSize exceeds maxPayloadSize=${resolved.maxPayloadSize}, sending 413")
@@ -459,34 +481,108 @@ class ClaimCheckProxyFactory(
                     return
                 }
 
+                // Check available memory and disk space
+                val freeMemory = Runtime.getRuntime().freeMemory()
+                val tempDir = File(System.getProperty("java.io.tmpdir"))
+                val freeDiskSpace = tempDir.freeSpace
+                println("HttpProxy: Resource check: freeMemory=$freeMemory, freeDiskSpace=$freeDiskSpace, inMemoryThreshold=${resolved.inMemoryThreshold}")
+
                 if (totalSize <= resolved.inMemoryThreshold && tempFile == null) {
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes)
-                    chunks.add(bytes)
-                    println("HttpProxy: Stored payload in memory, chunk count=${chunks.size}")
+                    try {
+                        val bytes = ByteArray(size)
+                        payload.buffer().getBytes(payload.offset(), bytes)
+                        chunks.add(bytes)
+                        println("HttpProxy: Stored payload in memory: chunkSize=$size, chunkCount=${chunks.size}, totalMemoryUsed=${chunks.sumOf { it.size }}")
+                    } catch (e: OutOfMemoryError) {
+                        println("HttpProxy: OutOfMemoryError while allocating ByteArray: size=$size, freeMemory=$freeMemory")
+                        e.printStackTrace()
+                        doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                        cleanupTempFile()
+                        return
+                    } catch (e: Exception) {
+                        println("HttpProxy: Error copying payload to memory: ${e.message}")
+                        e.printStackTrace()
+                        doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                        cleanupTempFile()
+                        return
+                    }
                 } else {
                     if (tempFile == null) {
-                        println("HttpProxy: Creating temp file as totalSize exceeds inMemoryThreshold")
-                        tempFile = File.createTempFile("claimcheck", ".tmp")
-                        tempFileOutputStream = FileOutputStream(tempFile!!)
-                        chunks.forEach { tempFileOutputStream!!.write(it) }
-                        chunks.clear()
-                        println("HttpProxy: Moved chunks to temp file")
+                        println("HttpProxy: Creating temp file as totalSize=$totalSize exceeds inMemoryThreshold=${resolved.inMemoryThreshold}")
+                        try {
+                            if (freeDiskSpace < totalSize) {
+                                println("HttpProxy: Insufficient disk space: available=$freeDiskSpace, required=$totalSize")
+                                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                                cleanupTempFile()
+                                return
+                            }
+                            tempFile = File.createTempFile("claimcheck", ".tmp", tempDir)
+                            tempFileOutputStream = FileOutputStream(tempFile!!)
+                            println("HttpProxy: Created temp file: path=${tempFile!!.absolutePath}")
+
+                            try {
+                                chunks.forEachIndexed { index, chunk ->
+                                    tempFileOutputStream!!.write(chunk)
+                                    println("HttpProxy: Wrote chunk $index to temp file: size=${chunk.size}")
+                                }
+                                tempFileOutputStream!!.flush()
+                                println("HttpProxy: Flushed chunks to temp file")
+                                chunks.clear()
+                                println("HttpProxy: Cleared in-memory chunks, chunkCount=${chunks.size}")
+                            } catch (e: IOException) {
+                                println("HttpProxy: IOException while writing chunks to temp file: ${e.message}")
+                                e.printStackTrace()
+                                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                                cleanupTempFile()
+                                return
+                            }
+                        } catch (e: IOException) {
+                            println("HttpProxy: IOException while creating temp file: ${e.message}")
+                            e.printStackTrace()
+                            doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                            cleanupTempFile()
+                            return
+                        }
                     }
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes, 0, size)
-                    tempFileOutputStream!!.write(bytes)
-                    println("HttpProxy: Wrote payload to temp file")
+                    try {
+                        val bytes = ByteArray(size)
+                        payload.buffer().getBytes(payload.offset(), bytes, 0, size)
+                        tempFileOutputStream!!.write(bytes)
+                        tempFileOutputStream!!.flush()
+                        println("HttpProxy: Wrote payload to temp file: size=$size, totalFileSize=${tempFile!!.length()}")
+                    } catch (e: OutOfMemoryError) {
+                        println("HttpProxy: OutOfMemoryError while allocating ByteArray for temp file: size=$size, freeMemory=$freeMemory")
+                        e.printStackTrace()
+                        doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                        cleanupTempFile()
+                        return
+                    } catch (e: IOException) {
+                        println("HttpProxy: IOException while writing to temp file: ${e.message}")
+                        e.printStackTrace()
+                        doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                        cleanupTempFile()
+                        return
+                    }
                 }
 
-                // Update window to allow more data
+                val halfMemory = (Runtime.getRuntime().freeMemory() / 2).coerceAtMost(64L * 1024L)
+                val safeMax = resolved.maxPayloadSize.coerceAtMost(halfMemory).toInt()
+
                 initialAck = initialSeq
-                initialMax = resolved.maxPayloadSize.toInt().coerceAtLeast(8192)
-                doHttpWindow(authorization, traceId, 0L, reserved, 0)
-                println("HttpProxy: Window updated: initialAck=$initialAck, initialMax=$initialMax")
-                println("HttpProxy: Exiting onHttpData")
+                initialMax = safeMax.coerceAtLeast(8192) // 8 KB minimum window
+                try {
+                    doHttpWindow(authorization, traceId, 0L, padding = 0, capabilities = 0)
+                    println("HttpProxy: Window updated: initialSeq=$initialSeq, initialAck=$initialAck, initialMax=$initialMax, reserved=$reserved")
+                } catch (e: Exception) {
+                    println("HttpProxy: Error sending window update: ${e.message}")
+                    e.printStackTrace()
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                    cleanupTempFile()
+                    return
+                }
+                println("HttpProxy: Exiting onHttpData successfully")
             } catch (e: Exception) {
-                println("HttpProxy: Error in onHttpData for initialId=$initialId: ${e.message}")
+                println("HttpProxy: Unexpected error in onHttpData for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(data.traceId(), HEADER_STATUS_VALUE_500)
                 cleanupTempFile()
@@ -530,7 +626,7 @@ class ClaimCheckProxyFactory(
                         PutObjectArgs.builder()
                             .bucket(options.bucket)
                             .`object`(claimKey)
-                            .stream(inputStream, totalSize, -1)
+                            .stream(inputStream, totalSize, 5 * 1024 * 1024)
                             .build()
                     )
                     println("HttpProxy: MinIO upload successful")
