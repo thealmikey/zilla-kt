@@ -30,10 +30,12 @@ import io.minio.GetPresignedObjectUrlArgs
 import io.minio.MinioClient
 import io.minio.PutObjectArgs
 import io.minio.http.Method
-import java.io.ByteArrayInputStream
-import java.io.File
-import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.function.LongUnaryOperator
 import java.util.function.Predicate
 import java.lang.System as System
@@ -47,6 +49,8 @@ class ClaimCheckProxyFactory(
         const val HTTP_TYPE_NAME = "http"
         const val CLAIMCHECK_TYPE_NAME = "claimcheck"
         const val REQUEST_TIMEOUT_MS = 30000L // 30 seconds timeout for receiving data
+        const val MIN_PART_SIZE = 5 * 1024 * 1024L // S3 minimum multipart part size is 5MiB
+        const val DEFAULT_PART_SIZE = 8 * 1024 * 1024L // prefer 8MiB parts for balance
 
         val HEADER_STATUS_NAME = String8FW(":status")
         val HEADER_METHOD_NAME = String8FW(":method")
@@ -250,14 +254,21 @@ class ClaimCheckProxyFactory(
         private var replySeq: Long = 0
         private var replyAck: Long = 0
         private var replyMax: Int = 0
-        private val chunks = mutableListOf<ByteArray>()
+
+        // Streaming-related
         private var totalSize: Long = 0
-        private var tempFile: File? = null
-        private var tempFileOutputStream: FileOutputStream? = null
+        private var expectedContentLength: Long? = null
+        private val uploadError: AtomicReference<Throwable?> = AtomicReference(null)
+        private val done = AtomicBoolean(false)
+        private var queue: LinkedBlockingQueue<ByteArray>? = null
+        private var stream: QueueInputStream? = null
+        private var uploadThread: Thread? = null
+        private var uploadStarted: Boolean = false
+        private var claimKey: String? = null
+
         private val minioClient: MinioClient
         private val options: ClaimCheckOptionsConfig
         private var lastActivityTime: Long = 0
-        private var expectedContentLength: Long? = null
 
         init {
             println("HttpProxy: Entering constructor for initialId=$initialId")
@@ -303,7 +314,7 @@ class ClaimCheckProxyFactory(
                 if (msgTypeId != WindowFW.TYPE_ID && lastActivityTime > 0 && System.currentTimeMillis() - lastActivityTime > REQUEST_TIMEOUT_MS) {
                     println("HttpProxy: Request timeout after ${REQUEST_TIMEOUT_MS}ms, sending 408")
                     doHttpReset(windowRO.wrap(buffer, index, index + length).traceId(), HEADER_STATUS_VALUE_408)
-                    cleanupTempFile()
+                    cleanupStreaming()
                     return
                 }
 
@@ -354,6 +365,18 @@ class ClaimCheckProxyFactory(
                 val authorization = begin.authorization()
                 val extension = begin.extension()
 
+                // Attempt to parse Content-Length from HTTP headers
+                extension.get(httpBeginExRO::tryWrap)?.let { beginEx ->
+                    beginEx.headers().forEach { h ->
+                        val name = h.name().asString()
+                        if (name.equals("content-length", ignoreCase = true)) {
+                            runCatching { h.value().asString().toLong() }
+                                .onSuccess { expectedContentLength = it }
+                                .onFailure { /* ignore parse error */ }
+                        }
+                    }
+                }
+
                 initialSeq = sequence
                 initialAck = acknowledge
                 state = ClaimCheckState.openingInitial(state)
@@ -367,6 +390,38 @@ class ClaimCheckProxyFactory(
                 e.printStackTrace()
                 doHttpReset(begin.traceId(), HEADER_STATUS_VALUE_500)
             }
+        }
+
+        private fun ensureUploadStarted(traceId: Long) {
+            if (uploadStarted) return
+            println("HttpProxy: ensureUploadStarted() - starting streaming upload for initialId=$initialId")
+            uploadStarted = true
+            claimKey = UUID.randomUUID().toString()
+            val queueCapacityBytes = resolved.inMemoryThreshold.coerceAtLeast(DEFAULT_PART_SIZE) // use threshold as buffer budget
+            queue = LinkedBlockingQueue()
+            stream = QueueInputStream(queue!!, done)
+            val partSize = DEFAULT_PART_SIZE.coerceAtLeast(MIN_PART_SIZE)
+            val objectName = claimKey!!
+
+            uploadThread = Thread({
+                try {
+                    println("HttpProxy: Uploader thread started for claimKey=$objectName")
+                    minioClient.putObject(
+                        PutObjectArgs.builder()
+                            .bucket(options.bucket)
+                            .`object`(objectName)
+                            .stream(stream as InputStream, -1, partSize)
+                            .build()
+                    )
+                    println("HttpProxy: Uploader thread completed successfully for claimKey=$objectName")
+                } catch (t: Throwable) {
+                    println("HttpProxy: Uploader thread error for claimKey=$objectName: ${t.message}")
+                    t.printStackTrace()
+                    uploadError.set(t)
+                }
+            }, "claimcheck-upload-$initialId")
+            uploadThread!!.isDaemon = true
+            uploadThread!!.start()
         }
 
         private fun onHttpData(data: DataFW) {
@@ -389,28 +444,24 @@ class ClaimCheckProxyFactory(
                 if (totalSize > resolved.maxPayloadSize) {
                     println("HttpProxy: Total size $totalSize exceeds maxPayloadSize=${resolved.maxPayloadSize}, sending 413")
                     doHttpReset(traceId, HEADER_STATUS_VALUE_413)
-                    cleanupTempFile()
+                    cleanupStreaming()
                     return
                 }
 
-                if (totalSize <= resolved.inMemoryThreshold && tempFile == null) {
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes)
-                    chunks.add(bytes)
-                    println("HttpProxy: Stored payload in memory, chunk count=${chunks.size}")
-                } else {
-                    if (tempFile == null) {
-                        println("HttpProxy: Creating temp file as totalSize exceeds inMemoryThreshold")
-                        tempFile = File.createTempFile("claimcheck", ".tmp")
-                        tempFileOutputStream = FileOutputStream(tempFile!!)
-                        chunks.forEach { tempFileOutputStream!!.write(it) }
-                        chunks.clear()
-                        println("HttpProxy: Moved chunks to temp file")
-                    }
-                    val bytes = ByteArray(size)
-                    payload.buffer().getBytes(payload.offset(), bytes, 0, size)
-                    tempFileOutputStream!!.write(bytes)
-                    println("HttpProxy: Wrote payload to temp file")
+                ensureUploadStarted(traceId)
+
+                // copy payload bytes and enqueue for streaming upload
+                val bytes = ByteArray(size)
+                payload.buffer().getBytes(payload.offset(), bytes)
+                // blocking put will provide natural backpressure via this worker thread
+                queue!!.put(bytes)
+
+                // check if upload failed asynchronously
+                uploadError.get()?.let {
+                    println("HttpProxy: Detected upload error during onHttpData: ${it.message}")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                    cleanupStreaming()
+                    return
                 }
 
                 // Update window to allow more data
@@ -423,7 +474,7 @@ class ClaimCheckProxyFactory(
                 println("HttpProxy: Error in onHttpData for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(data.traceId(), HEADER_STATUS_VALUE_500)
-                cleanupTempFile()
+                cleanupStreaming()
             }
         }
 
@@ -443,75 +494,75 @@ class ClaimCheckProxyFactory(
                 if (expectedContentLength != null && totalSize != expectedContentLength) {
                     println("HttpProxy: Total size $totalSize does not match Content-Length $expectedContentLength, sending 400")
                     doHttpReset(traceId, HEADER_STATUS_VALUE_400)
-                    cleanupTempFile()
+                    cleanupStreaming()
                     return
                 }
 
-                val claimKey = UUID.randomUUID().toString()
-                println("HttpProxy: Generated claimKey=$claimKey")
-                try {
-                    val inputStream = if (tempFile != null) {
-                        println("HttpProxy: Closing temp file output stream")
-                        tempFileOutputStream?.close()
-                        tempFile!!.inputStream()
-                    } else {
-                        ByteArrayInputStream(chunks.concatToByteArray())
-                    }
-                    println("HttpProxy: Uploading to MinIO with claimKey=$claimKey")
-                    minioClient.putObject(
-                        PutObjectArgs.builder()
+                // if no data was received, still create empty upload
+                if (!uploadStarted) {
+                    ensureUploadStarted(traceId)
+                }
+
+                // finish queue/input stream and join uploader
+                done.set(true)
+                stream?.finish()
+                // join with timeout to avoid indefinite blocking
+                uploadThread?.join(TimeUnit.MINUTES.toMillis(5))
+
+                // check uploader result
+                uploadError.get()?.let { err ->
+                    println("HttpProxy: Error during MinIO upload: ${err.message}")
+                    doHttpReset(traceId, HEADER_STATUS_VALUE_500)
+                    cleanupStreaming()
+                    return
+                }
+
+                val objectName = claimKey!!
+                println("HttpProxy: Upload successful for claimKey=$objectName, building response")
+
+                val presignedUrl = if (resolved.presigned) {
+                    println("HttpProxy: Generating presigned URL")
+                    minioClient.getPresignedObjectUrl(
+                        GetPresignedObjectUrlArgs.builder()
+                            .method(Method.GET)
                             .bucket(options.bucket)
-                            .`object`(claimKey)
-                            .stream(inputStream, totalSize, -1)
+                            .`object`(objectName)
+                            .expiry(resolved.ttl.toInt())
                             .build()
                     )
-                    println("HttpProxy: MinIO upload successful")
-                    val presignedUrl = if (resolved.presigned) {
-                        println("HttpProxy: Generating presigned URL")
-                        minioClient.getPresignedObjectUrl(
-                            GetPresignedObjectUrlArgs.builder()
-                                .method(Method.GET)
-                                .bucket(options.bucket)
-                                .`object`(claimKey)
-                                .expiry(resolved.ttl.toInt())
-                                .build()
-                        )
-                    } else null
-                    println("HttpProxy: Building HTTP response headers")
-                    val httpBeginEx = httpBeginExRW.wrap(extBuffer, 0, extBuffer.capacity())
-                        .typeId(httpTypeId)
-                        .headersItem { h -> h.name(HEADER_STATUS_NAME).value(HEADER_STATUS_VALUE_200) }
-                        .headersItem { h -> h.name(HEADER_CONTENT_LENGTH_NAME).value("0") }
-                        .apply {
-                            resolved.headers.forEach { (name, value) ->
-                                val replaced = value.replace("uuid", claimKey)
-                                headersItem { h -> h.name(String8FW(name)).value(String16FW(replaced)) }
-                                println("HttpProxy: Added header $name=$replaced")
-                            }
-                            if (resolved.headers.isEmpty() || !resolved.headers.containsKey("X-Claim")) {
-                                val value = presignedUrl ?: claimKey
-                                headersItem { h -> h.name(HEADER_X_CLAIM_NAME).value(String16FW(value)) }
-                                println("HttpProxy: Added X-Claim header with value=$value")
-                            }
+                } else null
+
+                println("HttpProxy: Building HTTP response headers")
+                val httpBeginEx = httpBeginExRW.wrap(extBuffer, 0, extBuffer.capacity())
+                    .typeId(httpTypeId)
+                    .headersItem { h -> h.name(HEADER_STATUS_NAME).value(HEADER_STATUS_VALUE_200) }
+                    .headersItem { h -> h.name(HEADER_CONTENT_LENGTH_NAME).value("0") }
+                    .apply {
+                        resolved.headers.forEach { (name, value) ->
+                            val replaced = value.replace("uuid", objectName)
+                            headersItem { h -> h.name(String8FW(name)).value(String16FW(replaced)) }
+                            println("HttpProxy: Added header $name=$replaced")
                         }
-                        .build()
-                    println("HttpProxy: Sending HTTP Begin with traceId=$traceId")
-                    doHttpBegin(traceId, authorization, 0L, httpBeginEx)
-                    println("HttpProxy: Sending HTTP End with traceId=$traceId")
-                    doHttpEnd(traceId, authorization)
-                } catch (ex: Exception) {
-                    println("HttpProxy: Error during MinIO operations or HTTP response: ${ex.message}")
-                    ex.printStackTrace()
-                    doHttpReset(traceId, HEADER_STATUS_VALUE_500)
-                } finally {
-                    println("HttpProxy: Cleaning up temp file")
-                    cleanupTempFile()
-                }
+                        if (resolved.headers.isEmpty() || !resolved.headers.containsKey("X-Claim")) {
+                            val value = presignedUrl ?: objectName
+                            headersItem { h -> h.name(HEADER_X_CLAIM_NAME).value(String16FW(value)) }
+                            println("HttpProxy: Added X-Claim header with value=$value")
+                        }
+                    }
+                    .build()
+
+                println("HttpProxy: Sending HTTP Begin with traceId=$traceId")
+                doHttpBegin(traceId, authorization, 0L, httpBeginEx)
+                println("HttpProxy: Sending HTTP End with traceId=$traceId")
+                doHttpEnd(traceId, authorization)
+
+                cleanupStreaming()
                 println("HttpProxy: Exiting onHttpEnd")
             } catch (e: Exception) {
                 println("HttpProxy: Error in onHttpEnd for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(end.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupStreaming()
             }
         }
 
@@ -525,14 +576,15 @@ class ClaimCheckProxyFactory(
 
                 initialSeq = sequence
                 state = ClaimCheckState.closeInitial(state)
-                println("HttpProxy: Cleaning up temp file in abort")
-                cleanupTempFile()
+                println("HttpProxy: Aborting streaming upload")
+                abortStreaming()
                 doHttpAbort(traceId, authorization)
                 println("HttpProxy: Exiting onHttpAbort")
             } catch (e: Exception) {
                 println("HttpProxy: Error in onHttpAbort for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(abort.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupStreaming()
             }
         }
 
@@ -547,13 +599,14 @@ class ClaimCheckProxyFactory(
                 replyAck = acknowledge
                 replyMax = maximum
                 state = ClaimCheckState.closeReply(state)
-                println("HttpProxy: Cleaning up temp file in reset")
-                cleanupTempFile()
+                println("HttpProxy: Reset received, aborting streaming upload if active")
+                abortStreaming()
                 println("HttpProxy: Exiting onHttpReset")
             } catch (e: Exception) {
                 println("HttpProxy: Error in onHttpReset for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(reset.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupStreaming()
             }
         }
 
@@ -578,6 +631,7 @@ class ClaimCheckProxyFactory(
                 println("HttpProxy: Error in onHttpWindow for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(window.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupStreaming()
             }
         }
 
@@ -599,6 +653,7 @@ class ClaimCheckProxyFactory(
                 println("HttpProxy: Error in onHttpFlush for initialId=$initialId: ${e.message}")
                 e.printStackTrace()
                 doHttpReset(flush.traceId(), HEADER_STATUS_VALUE_500)
+                cleanupStreaming()
             }
         }
 
@@ -695,54 +750,87 @@ class ClaimCheckProxyFactory(
             }
         }
 
-        private fun doHttpWindow(authorization: Long, traceId: Long, budgetId: Long, padding: Int, capabilities: Int) {
-            println("HttpProxy: Entering doHttpWindow(traceId=$traceId, initialId=$initialId)")
+        private fun cleanupStreaming() {
+            println("HttpProxy: Entering cleanupStreaming(initialId=$initialId)")
             try {
-                doWindow(http, originId, routedId, initialId, initialSeq, initialAck, initialMax, traceId, authorization, budgetId, padding, capabilities)
-                println("HttpProxy: HTTP Window sent with initialAck=$initialAck, initialMax=$initialMax")
-                println("HttpProxy: Exiting doHttpWindow")
-            } catch (e: Exception) {
-                println("HttpProxy: Error in doHttpWindow for traceId=$traceId: ${e.message}")
-                e.printStackTrace()
-                doHttpReset(traceId, HEADER_STATUS_VALUE_500)
-            }
-        }
-
-        private fun cleanupTempFile() {
-            println("HttpProxy: Entering cleanupTempFile(initialId=$initialId)")
-            try {
-                tempFileOutputStream?.close()
-                tempFile?.let { if (it.exists()) it.delete() }
-                chunks.clear()
+                done.set(true)
+                stream?.close()
+                uploadThread?.join(TimeUnit.SECONDS.toMillis(5))
+                queue?.clear()
                 totalSize = 0
                 expectedContentLength = null
-                println("HttpProxy: Temp file cleaned up successfully")
+                claimKey = null
+                uploadStarted = false
+                println("HttpProxy: Streaming resources cleaned up successfully")
             } catch (e: Exception) {
-                println("HttpProxy: Error cleaning up temp file: ${e.message}")
+                println("HttpProxy: Error cleaning up streaming resources: ${e.message}")
                 e.printStackTrace()
             } finally {
-                tempFile = null
-                tempFileOutputStream = null
-                println("HttpProxy: Exiting cleanupTempFile")
+                queue = null
+                stream = null
+                uploadThread = null
+                println("HttpProxy: Exiting cleanupStreaming")
             }
         }
 
-        private fun List<ByteArray>.concatToByteArray(): ByteArray {
-            println("HttpProxy: Entering concatToByteArray(initialId=$initialId)")
+        private fun abortStreaming() {
+            println("HttpProxy: Entering abortStreaming(initialId=$initialId)")
             try {
-                val total = sumOf { it.size }
-                val out = ByteArray(total)
-                var off = 0
-                for (b in this) {
-                    System.arraycopy(b, 0, out, off, b.size)
-                    off += b.size
-                }
-                println("HttpProxy: Exiting concatToByteArray, created array of size=$total")
-                return out
+                done.set(true)
+                stream?.close()
+                uploadThread?.join(TimeUnit.SECONDS.toMillis(5))
+                queue?.clear()
+                println("HttpProxy: Aborted streaming upload")
             } catch (e: Exception) {
-                println("HttpProxy: Error in concatToByteArray: ${e.message}")
+                println("HttpProxy: Error aborting streaming: ${e.message}")
                 e.printStackTrace()
-                throw e
+            }
+        }
+
+        private class QueueInputStream(
+            private val queue: LinkedBlockingQueue<ByteArray>,
+            private val done: AtomicBoolean
+        ) : InputStream() {
+            private var current: ByteArray? = null
+            private var offset = 0
+            private var closed = false
+
+            override fun read(): Int {
+                val one = ByteArray(1)
+                val r = read(one, 0, 1)
+                return if (r == -1) -1 else (one[0].toInt() and 0xFF)
+            }
+
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (closed) return -1
+                while (true) {
+                    if (current == null || offset >= (current?.size ?: 0)) {
+                        if (done.get() && queue.isEmpty()) {
+                            return -1
+                        }
+                        current = queue.take()
+                        offset = 0
+                    }
+                    val available = (current?.size ?: 0) - offset
+                    if (available == 0) {
+                        // loop to take next
+                        continue
+                    }
+                    val toCopy = minOf(len, available)
+                    System.arraycopy(current!!, offset, b, off, toCopy)
+                    offset += toCopy
+                    return toCopy
+                }
+            }
+
+            fun finish() {
+                // signal that producer is finished
+                done.set(true)
+            }
+
+            override fun close() {
+                closed = true
+                done.set(true)
             }
         }
     }
