@@ -27,7 +27,7 @@ RUN ls /root/.m2/repository/io/aklivity/zilla
 RUN ./zpmw install
 RUN ./zpmw clean --keep-image
 
-FROM ubuntu:jammy-20250404
+FROM ubuntu:jammy-20251013
 
 ENV ZILLA_VERSION ${project.version}
 
